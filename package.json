@@ -1,0 +1,48 @@
+{
+  "name": "velora_backend",
+  "version": "1.0.0",
+  "description": "Velora backend — autonomous AI BDR (API, agents, jobs).",
+  "type": "module",
+  "main": "dist/api/server.js",
+  "scripts": {
+    "dev": "tsx watch src/api/server.ts",
+    "build": "tsup",
+    "start": "node dist/api/server.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "db:new": "supabase migration new",
+    "db:link": "supabase link",
+    "db:push": "supabase db push",
+    "db:lint": "supabase db lint"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.32.0",
+  "dependencies": {
+    "@fastify/cors": "^11.2.0",
+    "@supabase/supabase-js": "^2.108.1",
+    "dotenv": "^17.4.2",
+    "fastify": "^5.8.5",
+    "inngest": "^4.5.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.16",
+    "@types/node": "^25.9.2",
+    "supabase": "^2.105.0",
+    "tsup": "^8.5.1",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "supabase",
+      "esbuild",
+      "protobufjs"
+    ]
+  }
+}
