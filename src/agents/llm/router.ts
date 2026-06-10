@@ -24,6 +24,11 @@ export const TASK_MODEL_MAP: Record<TaskName, ModelRoute> = {
   reply_drafter: { tier: 'mid', model: 'claude-haiku-4-5' },
   copilot: { tier: 'mid', model: 'claude-haiku-4-5', cacheKb: true },
   embeddings: { tier: 'embedding', model: 'text-embedding-3-small' },
+  // NL → structured filters: short extraction. Anthropic Haiku in Slice 2;
+  // reassigned to the cheap tier (Flash-Lite/DeepSeek) in Slice 3b.
+  nl_to_filters: { tier: 'mid', model: 'claude-haiku-4-5', maxOutputTokens: 400 },
+  // ICP suggestions: reads the per-customer KB (cache it), short reasoning.
+  icp_suggestions: { tier: 'mid', model: 'claude-haiku-4-5', maxOutputTokens: 600, cacheKb: true },
 };
 
 export function selectModel(task: TaskName): ModelRoute {

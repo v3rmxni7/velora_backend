@@ -4,9 +4,12 @@ import { ZodError } from 'zod';
 import { env } from '../config/env.js';
 import { AppError } from '../lib/errors.js';
 import { coachingPointsRoute } from './routes/coaching-points.js';
+import { findLeadsRoute } from './routes/find-leads.js';
 import { healthRoute } from './routes/health.js';
 import { icpProfilesRoute } from './routes/icp-profiles.js';
 import { kbRoute } from './routes/kb.js';
+import { leadsRoute } from './routes/leads.js';
+import { listsRoute } from './routes/lists.js';
 import { proofItemsRoute } from './routes/proof-items.js';
 
 const app = Fastify({ logger: true });
@@ -31,6 +34,9 @@ async function start(): Promise<void> {
   await app.register(coachingPointsRoute);
   await app.register(proofItemsRoute);
   await app.register(icpProfilesRoute);
+  await app.register(findLeadsRoute);
+  await app.register(listsRoute);
+  await app.register(leadsRoute);
   await app.listen({ port: env.PORT, host: env.HOST });
 }
 

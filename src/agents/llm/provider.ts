@@ -1,5 +1,7 @@
-import type { LLMRequest, LLMResponse } from './types.js';
+import type { LLMResponse, ProviderRequest } from './types.js';
 
 export interface LLMProvider {
-  generate(req: LLMRequest): Promise<LLMResponse>;
+  /** Stable id used by the registry/resolver (e.g. 'anthropic'). */
+  readonly id: string;
+  generate(req: ProviderRequest): Promise<LLMResponse>;
 }
