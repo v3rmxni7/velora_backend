@@ -21,6 +21,9 @@ const EnvSchema = z.object({
   ANTHROPIC_API_KEY: z.string().optional(),
   OPENAI_API_KEY: z.string().optional(),
   GOOGLE_API_KEY: z.string().optional(),
+
+  // Scraping (Firecrawl) — KB ingestion, Phase 1 Slice 1.
+  FIRECRAWL_API_KEY: z.string().optional(),
 });
 
 const parsed = EnvSchema.safeParse(process.env);

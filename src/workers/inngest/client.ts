@@ -19,6 +19,9 @@ export const events = {
   leadEnrich: eventType('lead/enrich', {
     schema: staticSchema<Dedupe & { organizationId: string; leadId: string }>(),
   }),
+  kbIngest: eventType('kb/ingest', {
+    schema: staticSchema<Dedupe & { organizationId: string; sourceUrl: string }>(),
+  }),
 };
 
 export const inngest = new Inngest({
