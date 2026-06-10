@@ -1,6 +1,12 @@
 -- Phase 0 foundation — multi-tenant core. RLS enabled on EVERY table.
 -- Tenancy: single-org-per-user (users.organization_id NOT NULL). Multi-org would
 -- need a memberships join table + reworked RLS (deferred).
+--
+-- ORDER NOTE: auth_organization_id() is LANGUAGE sql and references public.users,
+-- and Postgres validates SQL function bodies at CREATE time (check_function_bodies).
+-- So the helper MUST be created AFTER public.users exists, and any policy that calls
+-- it comes after the helper. Hence the order below: organizations + users tables
+-- first, then the helper, then helper-dependent policies and the remaining tables.
 
 -- ---------------------------------------------------------------------------
 -- Extensions
@@ -9,10 +15,9 @@ create extension if not exists pgcrypto;  -- gen_random_uuid()
 create extension if not exists citext;    -- case-insensitive email
 
 -- ---------------------------------------------------------------------------
--- Shared helpers
--- ---------------------------------------------------------------------------
-
 -- Touch trigger for MUTABLE tables only (never on the append-only credit_ledger).
+-- plpgsql bodies are not validated against tables at CREATE time, so this is safe here.
+-- ---------------------------------------------------------------------------
 create or replace function public.set_updated_at()
 returns trigger
 language plpgsql
@@ -23,21 +28,8 @@ begin
 end;
 $$;
 
--- Current user's organization id.
--- SECURITY DEFINER so it bypasses users-RLS and cannot recurse; STABLE for
--- per-statement caching; search_path pinned to '' (so all refs are schema-qualified).
-create or replace function public.auth_organization_id()
-returns uuid
-language sql
-stable
-security definer
-set search_path = ''
-as $$
-  select organization_id from public.users where id = auth.uid()
-$$;
-
 -- ---------------------------------------------------------------------------
--- organizations  (tenant root)
+-- organizations  (tenant root) — read policy added after the helper exists
 -- ---------------------------------------------------------------------------
 create table public.organizations (
   id uuid primary key default gen_random_uuid(),
@@ -52,11 +44,6 @@ create trigger organizations_set_updated_at
   for each row execute function public.set_updated_at();
 
 alter table public.organizations enable row level security;
-
-create policy "org members read their organization"
-  on public.organizations for select
-  to authenticated
-  using (id = public.auth_organization_id());
 
 -- ---------------------------------------------------------------------------
 -- users  (links auth.users → organization, with a role)
@@ -79,6 +66,27 @@ create policy "users read self"
   on public.users for select
   to authenticated
   using (id = (select auth.uid()));
+
+-- ---------------------------------------------------------------------------
+-- Org-scoping helper — defined AFTER public.users exists.
+-- SECURITY DEFINER bypasses users-RLS so it cannot recurse; STABLE for
+-- per-statement caching; search_path pinned to '' (so all refs are schema-qualified).
+-- ---------------------------------------------------------------------------
+create or replace function public.auth_organization_id()
+returns uuid
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select organization_id from public.users where id = auth.uid()
+$$;
+
+-- organizations read policy (now that the helper exists)
+create policy "org members read their organization"
+  on public.organizations for select
+  to authenticated
+  using (id = public.auth_organization_id());
 
 -- ---------------------------------------------------------------------------
 -- integrations  (CRM / calendar OAuth + sync state)
