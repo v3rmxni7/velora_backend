@@ -22,6 +22,16 @@ export const events = {
   kbIngest: eventType('kb/ingest', {
     schema: staticSchema<Dedupe & { organizationId: string; sourceUrl: string }>(),
   }),
+  draftGenerate: eventType('draft/generate', {
+    schema: staticSchema<
+      Dedupe & {
+        organizationId: string;
+        leadType: 'person' | 'company' | 'local_business';
+        leadId: string;
+        campaignId?: string;
+      }
+    >(),
+  }),
 };
 
 export const inngest = new Inngest({

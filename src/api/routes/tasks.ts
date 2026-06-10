@@ -1,0 +1,116 @@
+import type { FastifyPluginAsync } from 'fastify';
+import { z } from 'zod';
+import { events, inngest } from '../../workers/inngest/client.js';
+import { authenticate, requireAuth } from '../middleware/auth.js';
+
+const ListQuery = z.object({
+  type: z.enum(['outbound_approval', 'manual', 'platform']).optional(),
+  status: z.enum(['pending', 'approved', 'rejected', 'dismissed']).optional(),
+  search: z.string().min(1).max(200).optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+});
+const IdParam = z.object({ id: z.uuid() });
+const RejectBody = z.object({ reason: z.string().max(500).optional() });
+const ApproveAll = z.object({ ids: z.array(z.uuid()).max(500).optional() });
+const GenerateBody = z.object({
+  leadType: z.enum(['person', 'company', 'local_business']),
+  leadId: z.uuid(),
+  campaignId: z.uuid().optional(),
+});
+
+type CountKey = 'outbound_approval' | 'manual' | 'platform';
+
+export const tasksRoute: FastifyPluginAsync = async (app) => {
+  app.addHook('preHandler', authenticate);
+
+  app.get('/tasks', async (request) => {
+    const { db } = requireAuth(request);
+    const { type, status, search, limit } = ListQuery.parse(request.query);
+    let q = db.from('tasks').select('*');
+    if (type) q = q.eq('type', type);
+    if (status) q = q.eq('status', status);
+    if (search) q = q.ilike('subject', `%${search}%`);
+    const { data, error } = await q.order('created_at', { ascending: false }).limit(limit);
+    if (error) throw error;
+    return { data };
+  });
+
+  // Pending count per task type (powers the badges). Static route — declared before /:id.
+  app.get('/tasks/counts', async (request) => {
+    const { db } = requireAuth(request);
+    const { data, error } = await db.from('tasks').select('type').eq('status', 'pending');
+    if (error) throw error;
+    const pending: Record<CountKey, number> = { outbound_approval: 0, manual: 0, platform: 0 };
+    for (const r of data ?? []) {
+      const t = r.type as CountKey;
+      if (t in pending) pending[t] += 1;
+    }
+    return { pending };
+  });
+
+  app.get('/tasks/:id', async (request, reply) => {
+    const { db } = requireAuth(request);
+    const { id } = IdParam.parse(request.params);
+    const { data, error } = await db.from('tasks').select('*').eq('id', id).maybeSingle();
+    if (error) throw error;
+    if (!data) return reply.code(404).send({ error: 'not_found' });
+    return { data };
+  });
+
+  app.post('/tasks/:id/approve', async (request, reply) => {
+    const { db, userId } = requireAuth(request);
+    const { id } = IdParam.parse(request.params);
+    const { data, error } = await db
+      .from('tasks')
+      .update({ status: 'approved', approved_by: userId, approved_at: new Date().toISOString() })
+      .eq('id', id)
+      .eq('status', 'pending')
+      .select('id')
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return reply.code(404).send({ error: 'not_found_or_not_pending' });
+    return { data };
+  });
+
+  app.post('/tasks/:id/reject', async (request, reply) => {
+    const { db } = requireAuth(request);
+    const { id } = IdParam.parse(request.params);
+    const { reason } = RejectBody.parse(request.body ?? {});
+    const { data, error } = await db
+      .from('tasks')
+      .update({ status: 'rejected', reason: reason ?? null })
+      .eq('id', id)
+      .eq('status', 'pending')
+      .select('id')
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return reply.code(404).send({ error: 'not_found_or_not_pending' });
+    return { data };
+  });
+
+  app.post('/tasks/approve-all', async (request) => {
+    const { db, userId } = requireAuth(request);
+    const { ids } = ApproveAll.parse(request.body ?? {});
+    let q = db
+      .from('tasks')
+      .update({ status: 'approved', approved_by: userId, approved_at: new Date().toISOString() })
+      .eq('status', 'pending')
+      .eq('type', 'outbound_approval');
+    if (ids && ids.length > 0) q = q.in('id', ids);
+    const { data, error } = await q.select('id');
+    if (error) throw error;
+    return { approved: (data ?? []).length };
+  });
+
+  // Enqueue a draft for a saved lead (authorize, then dispatch the idempotent job).
+  app.post('/tasks/generate', async (request, reply) => {
+    const { organizationId } = requireAuth(request);
+    const { leadType, leadId, campaignId } = GenerateBody.parse(request.body);
+    const dedupeKey = `draft:${organizationId}:${leadType}:${leadId}:${campaignId ?? 'none'}`;
+    await inngest.send({
+      name: events.draftGenerate.name,
+      data: { organizationId, leadType, leadId, ...(campaignId ? { campaignId } : {}), dedupeKey },
+    });
+    return reply.code(202).send({ status: 'queued', dedupeKey });
+  });
+};

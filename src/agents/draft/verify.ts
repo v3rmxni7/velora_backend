@@ -1,0 +1,77 @@
+// Anti-hallucination — DETERMINISTIC checks (no LLM judging itself).
+//
+// DEFENSE LAYERS, in order of importance:
+//   1. Source-binding (filterFacts) — the Researcher's facts are dropped unless their
+//      sourceRef is one we actually provided. Kills fabricated AND falsely-cited facts.
+//   2. Thin-facts → template fallback (in generate.ts) — when too few grounded facts
+//      survive, we never run the Writer; we render a code-only safe template instead.
+//   3. usedFactIds ⊆ facts (below).
+//   4. Hard-claim token scan (below) — a CONSERVATIVE BACKSTOP only. It catches high-risk
+//      *hard* claims (%, $, 4+-digit numbers, multi-word proper nouns) that don't trace to
+//      the allowed corpus. It does NOT catch soft/qualitative claims ("you're scaling
+//      fast") — do not over-trust it. Layers 1–2 are the primary guarantees.
+
+export interface Fact {
+  id: string;
+  text: string;
+  sourceType: 'kb_chunk' | 'lead_field' | 'proof_item';
+  sourceRef: string;
+  confidence: number;
+}
+
+/** Drop facts whose sourceRef wasn't one we provided (false/fabricated citation), or low confidence. */
+export function filterFacts(
+  facts: Fact[],
+  allowedRefs: Set<string>,
+  minConfidence: number,
+): Fact[] {
+  return facts.filter((f) => allowedRefs.has(f.sourceRef) && f.confidence >= minConfidence);
+}
+
+export interface VerifyResult {
+  ok: boolean;
+  unverified: string[];
+}
+
+/**
+ * Extract high-risk "hard" claims: %, $ amounts, 4+-digit numbers, and capitalized words that
+ * are NOT sentence-initial (so greetings / "I" / sentence starts are skipped). A fabricated
+ * company/product name surfaces as such a word and won't be in the corpus; known names
+ * (recipient, company, proof) are in the corpus and pass.
+ */
+export function extractHardClaims(body: string): string[] {
+  const claims = new Set<string>();
+  for (const m of body.matchAll(/\$\s?\d[\d,.]*/g)) claims.add(m[0].trim());
+  for (const m of body.matchAll(/\d[\d,.]*\s?%/g)) claims.add(m[0].trim());
+  for (const m of body.matchAll(/\b\d{4,}\b/g)) claims.add(m[0]);
+  for (const segment of body.split(/[.!?\n]+/)) {
+    const words = segment.trim().split(/\s+/);
+    for (let i = 1; i < words.length; i++) {
+      const w = (words[i] ?? '').replace(/[^A-Za-z0-9]/g, '');
+      if (/^[A-Z][a-zA-Z]{2,}$/.test(w)) claims.add(w);
+    }
+  }
+  return [...claims];
+}
+
+/**
+ * Verify a generated draft: every used fact id must be a provided fact, and every hard claim
+ * in the body must trace to the allowed corpus (facts + lead fields + proof). Backstop only —
+ * see the defense-layers note above.
+ */
+export function verifyDraft(
+  body: string,
+  allowedCorpus: string,
+  usedFactIds: string[],
+  factIds: string[],
+): VerifyResult {
+  const unverified: string[] = [];
+  for (const id of usedFactIds) {
+    if (!factIds.includes(id)) unverified.push(`unknown-fact:${id}`);
+  }
+  const corpus = allowedCorpus.toLowerCase();
+  for (const claim of extractHardClaims(body)) {
+    if (!corpus.includes(claim.toLowerCase())) unverified.push(`unverified-claim:${claim}`);
+  }
+  return { ok: unverified.length === 0, unverified };
+}
