@@ -75,6 +75,15 @@ async function main(): Promise<void> {
     if (ins.error) throw ins.error;
   }
 
+  // Demo reset: clear the org's task queue and any sparse verification leads so every
+  // re-run yields a clean demo (drafts get generated live, under the current gate).
+  await admin.from('tasks').delete().eq('organization_id', orgId);
+  await admin
+    .from('people')
+    .delete()
+    .eq('organization_id', orgId)
+    .like('external_id', 'demo:sparse:%');
+
   // KB (idempotent): replace the org's coaching points + proof items.
   await admin.from('coaching_points').delete().eq('organization_id', orgId);
   await admin.from('proof_items').delete().eq('organization_id', orgId);
@@ -198,7 +207,7 @@ async function main(): Promise<void> {
   console.log(`  email:       ${EMAIL}`);
   console.log(`  password:    ${PASSWORD}`);
   console.log(`  org id:      ${orgId}`);
-  console.log(`  leads:       ${rows.length} people · KB: 2 coaching + 2 proof`);
+  console.log(`  leads:       ${rows.length} people · KB: 2 coaching + 2 proof · task queue reset`);
   console.log('  → log in to the frontend with the email + password above.');
   console.log('========================================\n');
 }
