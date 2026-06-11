@@ -274,7 +274,7 @@ The runtime cost center from Part 2, chosen per task. Principle: **only the fina
 |---|---|---|
 | Gemini 2.5 / 3.1 Flash-Lite | $0.10 / $0.40 | Cheapest: classification, routing, extraction, fact-gathering |
 | DeepSeek V3.2 | $0.14 / $0.28 | Ultra-cheap alt (OpenAI-compatible, 90% cache discount) |
-| Claude Haiku 4.5 | $0.25 / $1.25 | Mid: positioning, reply drafting, KB synthesis, copilot |
+| Claude Haiku 4.5 | $1.00 / $5.00 | Mid: positioning, reply drafting, KB synthesis, copilot |
 | Gemini 3 Flash | $0.50 / $3.00 | Mid alternate |
 | Claude Sonnet 4.6 | $3.00 / $15.00 | STRONG: the final outbound email only |
 | GPT-5.4 | $2.50 / $15.00 | Strong alternate / failover for the final email |
