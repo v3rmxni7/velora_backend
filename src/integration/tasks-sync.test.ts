@@ -31,6 +31,7 @@ describe.skipIf(!ready)('BE-1 live — synchronous draft generation', () => {
   const b = { orgId: '', userId: '', email: `sync+${stamp}-b@example.com`, token: '' };
   let richLeadId = '';
   let sparseLeadId = '';
+  let nameOnlyLeadId = '';
 
   function userDb(token: string) {
     const db = createUserClient(token);
@@ -109,6 +110,21 @@ describe.skipIf(!ready)('BE-1 live — synchronous draft generation', () => {
       .single();
     if (sparse.error) throw sparse.error;
     sparseLeadId = sparse.data.id as string;
+    // Name-only: identity fields but nothing substantive — the gate-labeling case.
+    const nameOnly = await admin
+      .from('people')
+      .insert({
+        organization_id: a.orgId,
+        provider: 'seed',
+        external_id: `sync-nameonly:${stamp}`,
+        first_name: 'Sam',
+        full_name: 'Sam Doe',
+        source: 'find_leads',
+      })
+      .select('id')
+      .single();
+    if (nameOnly.error) throw nameOnly.error;
+    nameOnlyLeadId = nameOnly.data.id as string;
   }, 120_000);
 
   afterAll(async () => {
@@ -142,6 +158,21 @@ describe.skipIf(!ready)('BE-1 live — synchronous draft generation', () => {
     expect(task?.draft_mode).toBe('template');
     expect(task?.status).toBe('pending');
   }, 30_000);
+
+  it('LABELING GATE (real researcher, no stub): name-only lead → template, not "personalized"', async () => {
+    // Deterministic under the new rule regardless of what the model returns: a name-only
+    // lead in a kb_chunk-less org can only yield identity-lead_field or proof facts —
+    // substantive lead facts are structurally zero → 'no lead-specific facts'.
+    const { task } = await runDraftGeneration({
+      db: userDb(a.token),
+      organizationId: a.orgId,
+      leadType: 'person',
+      leadId: nameOnlyLeadId,
+    });
+    expect(task?.draft_mode).toBe('template');
+    expect(task?.reason).toBe('no lead-specific facts');
+    expect(task?.status).toBe('pending');
+  }, 60_000);
 
   it('CROSS-TENANT: org B cannot generate against org A’s lead (404) and sees no tasks', async () => {
     const dbB = userDb(b.token);

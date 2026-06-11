@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { extractHardClaims, type Fact, filterFacts, verifyDraft } from './verify.js';
+import {
+  decideDraftMode,
+  extractHardClaims,
+  type Fact,
+  filterFacts,
+  isSubstantiveLeadFact,
+  verifyDraft,
+} from './verify.js';
 
 const mkFact = (over: Partial<Fact>): Fact => ({
   id: 'f1',
@@ -61,5 +68,61 @@ describe('verifyDraft (BACKSTOP — hard-claim token scan)', () => {
 describe('extractHardClaims', () => {
   it('allows small CTA numbers (e.g. "15 min") — only %/$/4+digit/proper-nouns are hard', () => {
     expect(extractHardClaims('a quick 15 min call')).toEqual([]);
+  });
+});
+
+describe('isSubstantiveLeadFact (identity fields never make a draft "about" the lead)', () => {
+  it('real lead fields are substantive (title, company_name)', () => {
+    expect(isSubstantiveLeadFact(mkFact({ sourceRef: 'lead.title' }))).toBe(true);
+    expect(isSubstantiveLeadFact(mkFact({ sourceRef: 'lead.company_name' }))).toBe(true);
+  });
+  it('pure-identity fields are NOT substantive (first/last/full name, company name field)', () => {
+    for (const ref of ['lead.first_name', 'lead.last_name', 'lead.full_name', 'lead.name']) {
+      expect(isSubstantiveLeadFact(mkFact({ sourceRef: ref }))).toBe(false);
+    }
+  });
+  it('proof and kb facts are NOT lead-specific (they support the pitch, not the lead)', () => {
+    expect(isSubstantiveLeadFact(mkFact({ sourceType: 'proof_item', sourceRef: 'proof.x' }))).toBe(
+      false,
+    );
+    expect(isSubstantiveLeadFact(mkFact({ sourceType: 'kb_chunk', sourceRef: 'kb.y' }))).toBe(
+      false,
+    );
+  });
+});
+
+describe('decideDraftMode (the labeling gate — "personalized" must be earned)', () => {
+  const proof = (id: string) =>
+    mkFact({ id, sourceType: 'proof_item', sourceRef: `proof.${id}`, confidence: 0.9 });
+  const lead = (id: string, field: string) =>
+    mkFact({ id, sourceType: 'lead_field', sourceRef: `lead.${field}`, confidence: 1 });
+
+  it('PROOF-ONLY (the B3 finding): org proof alone is NOT personalized', () => {
+    const d = decideDraftMode([proof('p1'), proof('p2')]);
+    expect(d).toEqual({ mode: 'template', reason: 'no lead-specific facts' });
+  });
+  it('NAME-FIELDS-ONLY (the B3 finding): first_name + full_name is NOT personalized', () => {
+    const d = decideDraftMode([lead('f1', 'first_name'), lead('f2', 'full_name')]);
+    expect(d).toEqual({ mode: 'template', reason: 'no lead-specific facts' });
+  });
+  it('the minimum that earns it: 1 substantive lead fact + 1 proof fact → personalized', () => {
+    expect(decideDraftMode([lead('f1', 'title'), proof('p1')])).toEqual({
+      mode: 'personalized',
+    });
+  });
+  it('too few facts overall → insufficient verified facts (unchanged behavior)', () => {
+    expect(decideDraftMode([lead('f1', 'title')])).toEqual({
+      mode: 'template',
+      reason: 'insufficient verified facts',
+    });
+    expect(decideDraftMode([])).toEqual({
+      mode: 'template',
+      reason: 'insufficient verified facts',
+    });
+  });
+  it('two substantive lead facts → personalized', () => {
+    expect(decideDraftMode([lead('f1', 'title'), lead('f2', 'company_name')])).toEqual({
+      mode: 'personalized',
+    });
   });
 });

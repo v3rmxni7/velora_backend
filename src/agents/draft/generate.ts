@@ -5,10 +5,10 @@ import type { ProviderRegistry } from '../llm/complete.js';
 import type { Usage } from '../llm/types.js';
 import { type ResearcherInputs, type ResearchResult, runResearcher } from './researcher.js';
 import { renderTemplate } from './template.js';
-import { type Fact, filterFacts, verifyDraft } from './verify.js';
+import { decideDraftMode, type Fact, filterFacts, verifyDraft } from './verify.js';
 import { runWriter, type WriterInput, type WriterResult } from './writer.js';
 
-const MIN_FACTS = 2;
+// MIN_FACTS / MIN_LEAD_FACTS live with the gate in verify.ts (decideDraftMode).
 const MIN_FACT_CONFIDENCE = 0.6;
 
 export type LeadType = 'person' | 'company' | 'local_business';
@@ -148,14 +148,17 @@ export async function generateDraft(
     leadFields.company_name ?? (leadType !== 'person' ? leadFields.name : undefined);
   const valueProp = proof[0]?.text ?? coaching[0] ?? '';
 
-  // Gate: too few grounded facts → safe template (the strong Writer never runs).
-  if (grounded.length < MIN_FACTS) {
+  // Gate (verify.ts decideDraftMode): 'personalized' must be earned — enough verified
+  // facts AND at least one substantive lead fact; otherwise the safe template (the
+  // strong Writer never runs).
+  const decision = decideDraftMode(grounded);
+  if (decision.mode === 'template') {
     const t = renderTemplate({ firstName, companyName }, valueProp);
     return {
       ...t,
       draftMode: 'template',
       confidence: overallConfidence,
-      reason: 'insufficient verified facts',
+      reason: decision.reason,
       grounding: {
         mode: 'template',
         overallConfidence,

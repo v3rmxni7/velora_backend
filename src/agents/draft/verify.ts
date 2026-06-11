@@ -3,8 +3,11 @@
 // DEFENSE LAYERS, in order of importance:
 //   1. Source-binding (filterFacts) — the Researcher's facts are dropped unless their
 //      sourceRef is one we actually provided. Kills fabricated AND falsely-cited facts.
-//   2. Thin-facts → template fallback (in generate.ts) — when too few grounded facts
-//      survive, we never run the Writer; we render a code-only safe template instead.
+//   2. The labeling gate (decideDraftMode, below) — 'personalized' requires ≥MIN_FACTS
+//      verified facts AND ≥MIN_LEAD_FACTS substantive lead facts (a real lead field,
+//      not the lead's own name; proof/kb support the pitch but don't make a draft about
+//      THIS lead). Anything less → the Writer never runs; generate.ts renders the
+//      code-only safe template instead.
 //   3. usedFactIds ⊆ facts (below).
 //   4. Hard-claim token scan (below) — a CONSERVATIVE BACKSTOP only. It catches high-risk
 //      *hard* claims (%, $, 4+-digit numbers, multi-word proper nouns) that don't trace to
@@ -26,6 +29,39 @@ export function filterFacts(
   minConfidence: number,
 ): Fact[] {
   return facts.filter((f) => allowedRefs.has(f.sourceRef) && f.confidence >= minConfidence);
+}
+
+// Pure-identity lead fields: knowing someone's NAME is not knowing something about them.
+// 'name' covers company/local_business identity. Everything else a lead row carries
+// (title, seniority, department, company_name, industry, location…) is substantive.
+export const IDENTITY_FIELDS = new Set(['first_name', 'last_name', 'full_name', 'name']);
+
+/** A fact that makes a draft about THIS lead: a real lead field, not the lead's own name. */
+export function isSubstantiveLeadFact(f: Fact): boolean {
+  if (f.sourceType !== 'lead_field') return false; // proof/kb support the pitch, not the lead
+  return !IDENTITY_FIELDS.has(f.sourceRef.replace(/^lead\./, ''));
+}
+
+/** Total verified facts (any source) required before the Writer may run. */
+export const MIN_FACTS = 2;
+/** Substantive lead facts required for the 'personalized' label to be earned. */
+export const MIN_LEAD_FACTS = 1;
+
+/**
+ * The labeling gate (defense layer 2), single-sourced and pure. 'personalized' is earned
+ * only when we know enough overall AND at least one real thing about this specific lead —
+ * org proof alone, or the lead's own name, never buys the label.
+ */
+export function decideDraftMode(
+  grounded: Fact[],
+): { mode: 'personalized' } | { mode: 'template'; reason: string } {
+  if (grounded.length < MIN_FACTS) {
+    return { mode: 'template', reason: 'insufficient verified facts' };
+  }
+  if (grounded.filter(isSubstantiveLeadFact).length < MIN_LEAD_FACTS) {
+    return { mode: 'template', reason: 'no lead-specific facts' };
+  }
+  return { mode: 'personalized' };
 }
 
 export interface VerifyResult {
