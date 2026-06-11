@@ -30,7 +30,12 @@ app.setErrorHandler((err, request, reply) => {
 });
 
 async function start(): Promise<void> {
-  await app.register(cors, { origin: env.CORS_ORIGIN });
+  // CORS_ORIGIN: '*' (default, local dev) | one origin | comma-separated list
+  // (e.g. Vercel prod + previews). Bearer-header auth — no credentials needed.
+  const corsOrigin = env.CORS_ORIGIN.includes(',')
+    ? env.CORS_ORIGIN.split(',').map((s) => s.trim())
+    : env.CORS_ORIGIN;
+  await app.register(cors, { origin: corsOrigin });
   await app.register(healthRoute);
   await app.register(kbRoute);
   await app.register(coachingPointsRoute);
