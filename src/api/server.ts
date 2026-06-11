@@ -4,6 +4,7 @@ import { ZodError } from 'zod';
 import { env } from '../config/env.js';
 import { AppError } from '../lib/errors.js';
 import { coachingPointsRoute } from './routes/coaching-points.js';
+import { copilotRoute } from './routes/copilot.js';
 import { findLeadsRoute } from './routes/find-leads.js';
 import { healthRoute } from './routes/health.js';
 import { icpProfilesRoute } from './routes/icp-profiles.js';
@@ -39,6 +40,7 @@ async function start(): Promise<void> {
   await app.register(listsRoute);
   await app.register(leadsRoute);
   await app.register(tasksRoute);
+  await app.register(copilotRoute);
   await app.listen({ port: env.PORT, host: env.HOST });
 }
 
