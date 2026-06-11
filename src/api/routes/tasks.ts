@@ -1,5 +1,6 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
+import { runDraftGeneration } from '../../agents/draft/task.js';
 import { events, inngest } from '../../workers/inngest/client.js';
 import { authenticate, requireAuth } from '../middleware/auth.js';
 
@@ -112,5 +113,15 @@ export const tasksRoute: FastifyPluginAsync = async (app) => {
       data: { organizationId, leadType, leadId, ...(campaignId ? { campaignId } : {}), dedupeKey },
     });
     return reply.code(202).send({ status: 'queued', dedupeKey });
+  });
+
+  // Synchronous generate: run the identical pipeline inline and return the created task.
+  // User-scoped (RLS) + org from the token — a lead in another org resolves to 404. Lets the
+  // UI produce a real grounded draft in one click without a running Inngest worker.
+  app.post('/tasks/generate-sync', async (request, reply) => {
+    const { db, organizationId } = requireAuth(request);
+    const { leadType, leadId, campaignId } = GenerateBody.parse(request.body);
+    const { task } = await runDraftGeneration({ db, organizationId, leadType, leadId, campaignId });
+    return reply.code(201).send({ data: task });
   });
 };
