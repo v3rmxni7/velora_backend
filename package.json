@@ -15,7 +15,8 @@
     "db:new": "supabase migration new",
     "db:link": "supabase link",
     "db:push": "supabase db push",
-    "db:lint": "supabase db lint"
+    "db:lint": "supabase db lint",
+    "seed:demo": "tsx scripts/seed-demo.ts"
   },
   "keywords": [],
   "author": "",
