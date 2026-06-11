@@ -1,6 +1,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { createOpenAIEmbeddings } from '../../integrations/embeddings/openai.js';
 import { AppError } from '../../lib/errors.js';
+import type { ProviderRegistry } from '../llm/complete.js';
+import type { Usage } from '../llm/types.js';
 import { type ResearcherInputs, type ResearchResult, runResearcher } from './researcher.js';
 import { renderTemplate } from './template.js';
 import { type Fact, filterFacts, verifyDraft } from './verify.js';
@@ -39,10 +41,11 @@ export interface GenerateInput {
   campaignId?: string | null;
 }
 // Injectable seams (default to the real LLM agents) — lets verification fire the template
-// path deterministically without a model call.
+// path deterministically and run the cheap-tier A/B by swapping the provider registry.
 export interface GenerateDeps {
   researcher?: (inputs: ResearcherInputs) => Promise<ResearchResult>;
   writer?: (input: WriterInput) => Promise<WriterResult | null>;
+  registry?: ProviderRegistry;
 }
 
 export interface DraftPayload {
@@ -58,6 +61,7 @@ export interface DraftPayload {
     usedFactIds: string[];
     verification: { ok: boolean; unverified: string[]; regenerated: boolean };
   };
+  usage?: { researcher?: Usage; writer?: Usage };
 }
 
 function buildLeadFields(
@@ -77,8 +81,8 @@ export async function generateDraft(
   deps: GenerateDeps = {},
 ): Promise<DraftPayload> {
   const { db, organizationId, leadType, leadId } = input;
-  const research = deps.researcher ?? runResearcher;
-  const write = deps.writer ?? runWriter;
+  const research = deps.researcher ?? ((i: ResearcherInputs) => runResearcher(i, deps.registry));
+  const write = deps.writer ?? ((i: WriterInput) => runWriter(i, deps.registry));
 
   const leadRes = await db
     .from(TABLE[leadType])
@@ -133,6 +137,7 @@ export async function generateDraft(
   }
 
   const result = await research({ leadFields, proof, kbChunks });
+  const researcherUsage = result.usage;
   const grounded = filterFacts(result.facts, result.allowedRefs, MIN_FACT_CONFIDENCE);
   const overallConfidence = grounded.length
     ? Math.round((grounded.reduce((s, f) => s + f.confidence, 0) / grounded.length) * 1000) / 1000
@@ -158,12 +163,11 @@ export async function generateDraft(
         usedFactIds: [],
         verification: { ok: true, unverified: [], regenerated: false },
       },
+      usage: { researcher: researcherUsage },
     };
   }
 
   // Writer + deterministic post-gen verification, with one regeneration on failure.
-  // Allowed corpus = grounded fact text + ALL known lead fields + proof. Lead-derived proper
-  // nouns (name/company/city) are legitimately known, so they never false-trip the hard-claim scan.
   const allowedCorpus = [
     ...grounded.map((f) => f.text),
     ...Object.values(leadFields),
@@ -175,6 +179,7 @@ export async function generateDraft(
 
   let verification = { ok: false, unverified: [] as string[] };
   let regenerated = false;
+  let writerUsage: Usage | undefined;
   for (let attempt = 0; attempt < 2; attempt++) {
     if (attempt > 0) regenerated = true;
     const w = await write({
@@ -185,6 +190,7 @@ export async function generateDraft(
       strictReminder: attempt > 0,
     });
     if (!w) continue;
+    writerUsage = w.usage;
     const v = verifyDraft(w.body, allowedCorpus, w.usedFactIds, factIds);
     if (v.ok) {
       return {
@@ -199,6 +205,7 @@ export async function generateDraft(
           usedFactIds: w.usedFactIds,
           verification: { ...v, regenerated },
         },
+        usage: { researcher: researcherUsage, writer: writerUsage },
       };
     }
     verification = v;
@@ -218,5 +225,6 @@ export async function generateDraft(
       usedFactIds: [],
       verification: { ...verification, regenerated: true },
     },
+    usage: { researcher: researcherUsage, writer: writerUsage },
   };
 }

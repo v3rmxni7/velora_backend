@@ -21,6 +21,9 @@ const EnvSchema = z.object({
   ANTHROPIC_API_KEY: z.string().optional(),
   OPENAI_API_KEY: z.string().optional(),
   GOOGLE_API_KEY: z.string().optional(),
+  // Cheap tier (Slice 3b) — DeepSeek via the OpenAI-compatible API.
+  DEEPSEEK_API_KEY: z.string().optional(),
+  DEEPSEEK_BASE_URL: z.string().default('https://api.deepseek.com'),
 
   // Scraping (Firecrawl) — KB ingestion, Phase 1 Slice 1.
   FIRECRAWL_API_KEY: z.string().optional(),

@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { complete } from '../llm/complete.js';
+import { complete, type ProviderRegistry } from '../llm/complete.js';
+import type { Usage } from '../llm/types.js';
 import type { Fact } from './verify.js';
 
 const WriterSchema = z
@@ -25,6 +26,7 @@ export interface WriterResult {
   subject: string;
   body: string;
   usedFactIds: string[];
+  usage?: Usage;
 }
 export interface WriterInput {
   facts: Fact[];
@@ -34,7 +36,10 @@ export interface WriterInput {
   strictReminder?: boolean;
 }
 
-export async function runWriter(input: WriterInput): Promise<WriterResult | null> {
+export async function runWriter(
+  input: WriterInput,
+  reg?: ProviderRegistry,
+): Promise<WriterResult | null> {
   const factLines = input.facts.map((f) => `- [${f.id}] ${f.text}`).join('\n') || '(none)';
   const coaching = input.coaching.slice(0, 20).join('\n') || '(none)';
   const system = [
@@ -51,11 +56,11 @@ export async function runWriter(input: WriterInput): Promise<WriterResult | null
     `${input.firstName ?? ''}${input.companyName ? ` at ${input.companyName}` : ''}`.trim();
   const content = `Recipient: ${recipient || '(unknown)'}\n\nCOACHING:\n${coaching}\n\nFACTS:\n${factLines}`;
 
-  const res = await complete('writer', {
-    system,
-    messages: [{ role: 'user', content }],
-    jsonSchema: WRITER_JSON_SCHEMA,
-  });
+  const res = await complete(
+    'writer',
+    { system, messages: [{ role: 'user', content }], jsonSchema: WRITER_JSON_SCHEMA },
+    reg,
+  );
   let raw: unknown;
   try {
     raw = JSON.parse(res.text);
@@ -63,5 +68,9 @@ export async function runWriter(input: WriterInput): Promise<WriterResult | null
     return null;
   }
   const parsed = WriterSchema.safeParse(raw);
-  return parsed.success ? parsed.data : null;
+  if (!parsed.success) return null;
+  return {
+    ...parsed.data,
+    usage: { model: res.model, inputTokens: res.inputTokens, outputTokens: res.outputTokens },
+  };
 }

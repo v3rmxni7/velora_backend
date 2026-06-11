@@ -43,3 +43,10 @@ export interface LLMResponse {
   inputTokens: number;
   outputTokens: number;
 }
+
+/** Token usage for one model call (telemetry / cost reporting). */
+export interface Usage {
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+}

@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { complete } from '../llm/complete.js';
+import { complete, type ProviderRegistry } from '../llm/complete.js';
+import type { Usage } from '../llm/types.js';
 import type { Fact } from './verify.js';
 
 const FactSchema = z.object({
@@ -9,10 +10,10 @@ const FactSchema = z.object({
   sourceRef: z.string().min(1).max(200),
   confidence: z.number().min(0).max(1),
 });
-const ResearcherSchema = z.object({ facts: z.array(FactSchema).max(12) }).strict();
 
 // Structured-output schema for the model: types + enums + structure only (Anthropic rejects
-// maxItems/maxLength; Zod above enforces caps).
+// maxItems/maxLength; per-fact Zod below enforces caps). DeepSeek uses JSON mode (no schema
+// enforcement), so the parser tolerates shape drift and the Zod gate stays authoritative.
 const RESEARCHER_JSON_SCHEMA: Record<string, unknown> = {
   type: 'object',
   additionalProperties: false,
@@ -45,16 +46,40 @@ export interface ResearchResult {
   facts: Fact[];
   /** Source ids we actually provided — used to drop fabricated/false-cited facts. */
   allowedRefs: Set<string>;
+  usage?: Usage;
 }
 
 const SYSTEM = [
   'You extract VERIFIED facts about a sales lead, each bound to its source.',
-  'Use ONLY the provided sources. Each source is shown with a bracketed id like [lead.title], [proof.<id>], or [kb.<id>].',
-  'For every fact, set sourceRef to EXACTLY one of those bracketed ids (copy it verbatim) and set sourceType accordingly',
-  '(lead_field | proof_item | kb_chunk). Do NOT invent facts or sources. confidence in 0..1. Return JSON only.',
+  'Use ONLY the provided sources. Each source has a bracketed id like [lead.title], [proof.<id>], or [kb.<id>].',
+  'For every fact, set sourceRef to EXACTLY one of those ids and sourceType accordingly (lead_field | proof_item | kb_chunk).',
+  'Do NOT invent facts or sources. confidence in 0..1. Return at most 8 concise facts (each under 12 words).',
+  'Return ONLY this JSON shape: {"facts":[{"id":"f1","text":"...","sourceType":"lead_field","sourceRef":"lead.title","confidence":0.9}]}',
 ].join(' ');
 
-export async function runResearcher(inputs: ResearcherInputs): Promise<ResearchResult> {
+/** Normalize provider shape drift (array vs {facts}, `fact`→`text`, missing id, bracketed ref). */
+function coerceFactArray(raw: unknown): unknown[] {
+  const arr = Array.isArray(raw) ? raw : (raw as { facts?: unknown } | null)?.facts;
+  if (!Array.isArray(arr)) return [];
+  return arr.map((item, i) => {
+    const o = (item ?? {}) as Record<string, unknown>;
+    const text = typeof o.text === 'string' ? o.text : typeof o.fact === 'string' ? o.fact : '';
+    const sourceRef =
+      typeof o.sourceRef === 'string' ? o.sourceRef.replace(/[[\]]/g, '').trim() : o.sourceRef;
+    return {
+      id: typeof o.id === 'string' && o.id ? o.id : `fact_${i + 1}`,
+      text,
+      sourceType: o.sourceType,
+      sourceRef,
+      confidence: o.confidence,
+    };
+  });
+}
+
+export async function runResearcher(
+  inputs: ResearcherInputs,
+  reg?: ProviderRegistry,
+): Promise<ResearchResult> {
   const allowedRefs = new Set<string>();
   const leadLines = Object.entries(inputs.leadFields).map(([k, v]) => {
     const ref = `lead.${k}`;
@@ -77,24 +102,33 @@ export async function runResearcher(inputs: ResearcherInputs): Promise<ResearchR
     `\nKNOWLEDGE:\n${kbLines.join('\n') || '(none)'}`,
   ].join('\n');
 
-  const res = await complete('researcher', {
-    system: SYSTEM,
-    messages: [{ role: 'user', content }],
-    jsonSchema: RESEARCHER_JSON_SCHEMA,
-  });
+  const res = await complete(
+    'researcher',
+    {
+      system: SYSTEM,
+      messages: [{ role: 'user', content }],
+      jsonSchema: RESEARCHER_JSON_SCHEMA,
+      maxOutputTokens: 1500, // headroom so JSON-mode providers don't truncate
+    },
+    reg,
+  );
+  const usage: Usage = {
+    model: res.model,
+    inputTokens: res.inputTokens,
+    outputTokens: res.outputTokens,
+  };
+
   let raw: unknown;
   try {
     raw = JSON.parse(res.text);
   } catch {
-    return { facts: [], allowedRefs };
+    return { facts: [], allowedRefs, usage };
   }
-  const parsed = ResearcherSchema.safeParse(raw);
-  if (!parsed.success) return { facts: [], allowedRefs };
-  // Models sometimes copy the bracketed id literally ("[lead.title]") — normalize to the bare id
-  // so source-binding matches allowedRefs.
-  const facts = parsed.data.facts.map((f) => ({
-    ...f,
-    sourceRef: f.sourceRef.replace(/[[\]]/g, '').trim(),
-  }));
-  return { facts, allowedRefs };
+  // Validate per-fact and keep the valid ones (tolerant of partial drift; the gate is still hard).
+  const facts: Fact[] = [];
+  for (const candidate of coerceFactArray(raw)) {
+    const parsed = FactSchema.safeParse(candidate);
+    if (parsed.success) facts.push(parsed.data);
+  }
+  return { facts, allowedRefs, usage };
 }
