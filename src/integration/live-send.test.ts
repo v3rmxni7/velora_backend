@@ -133,12 +133,12 @@ describe.skipIf(!ready)('Slice 2.5 live — LIVE send via fake Smartlead (zero r
     a.token = signin.data.session.access_token;
 
     await admin.from('coaching_points').insert({ organization_id: a.orgId, content: 'concise' });
-    // A connected mailbox so provisioning can assign a sender.
+    // A WARM mailbox so provisioning can assign a sender (2.8: only 'warm' qualifies).
     await admin.from('mailboxes').insert({
       organization_id: a.orgId,
       email: `mb+${stamp}@x.com`,
       smartlead_email_account_id: 'acct-1',
-      status: 'connected',
+      status: 'warm',
     });
     const camp = await admin
       .from('campaigns')
@@ -221,9 +221,13 @@ describe.skipIf(!ready)('Slice 2.5 live — LIVE send via fake Smartlead (zero r
     expect((debits.data ?? []).length).toBe(1);
     expect(Number(debits.data?.[0]?.delta)).toBe(-1);
 
-    // Idempotent re-send → still one message, one debit.
+    // Idempotent re-send → still one message, one debit, AND CRITICALLY no second Smartlead push
+    // (C1: the claim-before-push gate). A retry must NEVER re-send a real email.
+    const pushesBefore = addLeadCalls.length;
     const enr2 = (await admin.from('enrollments').select('*').eq('id', enrSuccess).single()).data;
-    await executeSend(userDb(a.token), enr2 as never, fake);
+    const res2 = await executeSend(userDb(a.token), enr2 as never, fake);
+    expect(res2.outcome).toBe('duplicate');
+    expect(addLeadCalls.length).toBe(pushesBefore); // NO second push
     const debits2 = await admin
       .from('credit_ledger')
       .select('id')

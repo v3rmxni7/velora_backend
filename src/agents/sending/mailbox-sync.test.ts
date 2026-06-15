@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  classifyWarmth,
+  MIN_WARMUP_SENT,
   mapAccountToMailboxRow,
   mapProvider,
   mapWarmupStatsToReputation,
@@ -62,5 +64,25 @@ describe('mapWarmupStatsToReputation', () => {
   });
   it('defaults missing counts to 0', () => {
     expect(mapWarmupStatsToReputation({})).toMatchObject({ sent: 0, inbox: 0, spam: 0 });
+  });
+});
+
+// H2 regression: 'warm' must be REACHABLE (it gates who can send) and only earned by a healthy,
+// active warmup. A cold/just-synced mailbox must never classify as warm.
+describe('classifyWarmth (H2 — only genuinely warm mailboxes may send)', () => {
+  it("returns 'connected' when warmup is not active, regardless of counts", () => {
+    expect(classifyWarmth({ sent: 100000, spam: 0 }, false)).toBe('connected');
+  });
+  it("returns 'warming' when active but below the send threshold", () => {
+    expect(classifyWarmth({ sent: MIN_WARMUP_SENT - 1, spam: 0 }, true)).toBe('warming');
+    expect(classifyWarmth({ sent: 0, spam: 0 }, true)).toBe('warming');
+    expect(classifyWarmth(null, true)).toBe('warming');
+  });
+  it("returns 'warm' only when active AND healthy (enough sent, low spam)", () => {
+    expect(classifyWarmth({ sent: MIN_WARMUP_SENT, spam: 0 }, true)).toBe('warm');
+    expect(classifyWarmth({ sent: 1000, spam: 40 }, true)).toBe('warm'); // 4% spam ≤ 5%
+  });
+  it("stays 'warming' when spam rate is too high even with volume", () => {
+    expect(classifyWarmth({ sent: 1000, spam: 200 }, true)).toBe('warming'); // 20% spam
   });
 });

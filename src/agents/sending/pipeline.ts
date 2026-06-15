@@ -169,6 +169,8 @@ export type SendOutcome =
   | 'not_approved'
   | 'suppressed'
   | 'insufficient_credit'
+  | 'verification_required'
+  | 'duplicate'
   | 'skipped';
 
 /** Upsert the outbound thread + message and advance the enrollment. Shared by dry-run + live. */
@@ -182,7 +184,7 @@ async function recordOutbound(
     gates: Record<string, unknown>;
     smartleadMessageId?: string | null;
   },
-): Promise<{ messageId?: string; dedupeKey: string }> {
+): Promise<{ messageId?: string; dedupeKey: string; created: boolean }> {
   const org = enrollment.organization_id;
   const thread = await db
     .from('threads')
@@ -226,6 +228,10 @@ async function recordOutbound(
     )
     .select('id');
   if (ins.error) throw ins.error;
+  // `created` = the insert actually wrote a row (vs. hit the (org,dedupe_key) conflict). This is
+  // the idempotency signal the live send relies on to claim-before-push: only the caller that
+  // created the row may perform the irreversible Smartlead push.
+  const created = (ins.data ?? []).length > 0;
   let messageId = (ins.data ?? [])[0]?.id as string | undefined;
   if (!messageId) {
     const ex = await db
@@ -241,7 +247,7 @@ async function recordOutbound(
     .from('enrollments')
     .update({ status: opts.enrollmentStatus, thread_id: threadId })
     .eq('id', enrollment.id);
-  return { messageId, dedupeKey };
+  return { messageId, dedupeKey, created };
 }
 
 /**
@@ -270,9 +276,12 @@ export async function executeSend(
     grounding: task.data.grounding,
   };
 
-  const email = await leadEmail(db, enrollment.lead_type, enrollment.lead_id);
-  // Re-check suppression at the last moment (defense — it may have changed since prepare).
-  if (email && (await isSuppressed(db, org, email))) {
+  // The exact address we would deliver to: the frozen verified_email, falling back to the raw
+  // lead email only if it was never set. The last-moment suppression re-check runs on THIS address
+  // (M3) — not the editable raw lead email, which can diverge from what Smartlead actually sends.
+  const recipient =
+    enrollment.verified_email ?? (await leadEmail(db, enrollment.lead_type, enrollment.lead_id));
+  if (recipient && (await isSuppressed(db, org, recipient))) {
     await db.from('enrollments').update({ status: 'unsubscribed' }).eq('id', enrollment.id);
     return { outcome: 'suppressed' };
   }
@@ -282,6 +291,17 @@ export async function executeSend(
   // ===== LIVE branch — the one irreversible path. Only reachable on a deliberate flag flip. =====
   if (mode.sendingEnabled && !mode.dryRun) {
     assertLiveSendAllowed(mode); // defensive; the branch condition already guarantees it
+
+    // H3 — fail CLOSED on verification. A live send requires a real verifier verdict; 'skipped'
+    // means MillionVerifier was unconfigured at prepare time. Never push an unverified address.
+    const verification = enrollment.verification ?? 'unknown';
+    if (verification !== 'deliverable' && verification !== 'risky') {
+      await db
+        .from('enrollments')
+        .update({ status: 'failed', error: 'verification_unavailable' })
+        .eq('id', enrollment.id);
+      return { outcome: 'verification_required' };
+    }
 
     // Credit ENFORCE (unlike dry-run): no balance → no send.
     const credit = assessCredits(await creditBalance(db, org), SEND_COST);
@@ -293,7 +313,6 @@ export async function executeSend(
       return { outcome: 'insufficient_credit' };
     }
 
-    const recipient = enrollment.verified_email ?? email;
     if (!recipient) {
       await db
         .from('enrollments')
@@ -302,6 +321,8 @@ export async function executeSend(
       return { outcome: 'skipped' };
     }
 
+    // Provision FIRST (idempotent, campaign-level): a transient provisioning failure must not burn
+    // the per-lead claim below, so it happens before we claim.
     const sl = client ?? createSmartleadClient();
     const campaign = await db
       .from('campaigns')
@@ -320,23 +341,39 @@ export async function executeSend(
       sl,
     );
 
-    // Push the rendered draft as custom fields → Smartlead delivers from a warmed mailbox.
-    await sl.addLead(smartleadCampaignId, {
-      email: recipient,
-      custom_fields: { velora_subject: draft.subject ?? '', velora_body: draft.body ?? '' },
-    });
-
     const gates = {
       suppressed: false,
-      verification: enrollment.verification ?? 'unknown',
+      verification,
       credit,
       mode: 'live' as const,
     };
-    const { messageId, dedupeKey } = await recordOutbound(db, enrollment, draft, {
+    // C1 — CLAIM BEFORE PUSH. Write the send:{org}:{enr}:{step} dedupe message FIRST. Only the
+    // caller that actually created the row (created === true) may perform the irreversible push;
+    // any retry sees created === false and refuses to re-send. This is at-most-once: the dedupe
+    // key GATES the push rather than following it, so a crash/timeout/retry can never double-send.
+    const { messageId, dedupeKey, created } = await recordOutbound(db, enrollment, draft, {
       messageStatus: 'queued',
       enrollmentStatus: 'queued',
       gates,
     });
+    if (!created) return { outcome: 'duplicate', messageId };
+
+    // The irreversible push. If addLead THROWS, delivery is uncertain — we deliberately do NOT
+    // auto re-push (the claim row above already blocks re-entry). Record the failure and surface
+    // it; a push that truly failed will simply never produce an EMAIL_SENT webhook. We trade a rare
+    // "claimed but maybe-not-sent" state for the guarantee of never double-sending a real email.
+    try {
+      await sl.addLead(smartleadCampaignId, {
+        email: recipient,
+        custom_fields: { velora_subject: draft.subject ?? '', velora_body: draft.body ?? '' },
+      });
+    } catch (err) {
+      await db
+        .from('enrollments')
+        .update({ status: 'failed', error: 'send_push_failed' })
+        .eq('id', enrollment.id);
+      throw err;
+    }
 
     // Debit credits via the service-role client (credit_ledger has no authenticated-insert policy).
     // idempotency_key blocks a double-charge on retry; a unique-violation (23505) is a no-op.

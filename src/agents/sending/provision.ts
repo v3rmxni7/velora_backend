@@ -27,19 +27,22 @@ export async function ensureSmartleadCampaign(
 ): Promise<string> {
   if (campaign.smartlead_campaign_id) return campaign.smartlead_campaign_id;
 
-  // The org's connected/warm mailboxes drive the send (rotation handled by Smartlead).
+  // Only genuinely WARM mailboxes drive the send (rotation handled by Smartlead). 'connected'
+  // (just-synced, no warmup) and 'warming' (mid-warmup, not yet proven) are EXCLUDED — sending real
+  // cold outreach from a cold/un-proven mailbox burns sender reputation. A mailbox reaches 'warm'
+  // only via refreshMailboxWarmup once its reputation clears the warmth thresholds (see mailbox-sync).
   const mb = await db
     .from('mailboxes')
     .select('smartlead_email_account_id')
     .eq('organization_id', campaign.organization_id)
-    .in('status', ['connected', 'warming', 'warm'])
+    .eq('status', 'warm')
     .not('smartlead_email_account_id', 'is', null);
   if (mb.error) throw mb.error;
   const accountIds = (mb.data ?? [])
     .map((r) => r.smartlead_email_account_id as string | null)
     .filter((v): v is string => !!v);
   if (accountIds.length === 0) {
-    throw new AppError('No connected mailboxes to send from', {
+    throw new AppError('No warm mailboxes to send from', {
       code: 'no_mailboxes',
       statusCode: 409,
     });

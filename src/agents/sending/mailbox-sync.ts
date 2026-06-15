@@ -71,6 +71,30 @@ export function mapWarmupStatsToReputation(stats: SmartleadWarmupStats): Record<
   };
 }
 
+// Warmth thresholds — a mailbox is only "warm" (safe to send real cold outreach from) once warmup
+// has been running AND it has a healthy track record. Sending from a cold/just-synced mailbox burns
+// sender reputation, so the send path (ensureSmartleadCampaign) filters to 'warm' only. Tunable.
+export const MIN_WARMUP_SENT = 100;
+export const MAX_SPAM_RATE = 0.05;
+
+/**
+ * Pure: a mailbox is 'warm' only when warmup is active AND its reputation clears the thresholds;
+ * 'warming' while active but still proving itself; 'connected' when warmup isn't running. This is
+ * what makes the 'warm' status reachable — mapWarmupStatus (initial sync, no stats yet) only ever
+ * yields 'warming'/'connected'; the promotion to 'warm' happens here, on a stats refresh.
+ */
+export function classifyWarmth(
+  reputation: { sent?: number; spam?: number } | null | undefined,
+  warmupActive: boolean,
+): 'warm' | 'warming' | 'connected' {
+  if (!warmupActive) return 'connected';
+  const sent = reputation?.sent ?? 0;
+  const spam = reputation?.spam ?? 0;
+  const spamRate = sent > 0 ? spam / sent : 1;
+  if (sent >= MIN_WARMUP_SENT && spamRate <= MAX_SPAM_RATE) return 'warm';
+  return 'warming';
+}
+
 /** Pull Smartlead accounts into mailboxes (upsert by org+email). Returns synced mailbox ids. */
 export async function syncMailboxes(
   db: SupabaseClient,
@@ -99,17 +123,23 @@ export async function refreshMailboxWarmup(
 ): Promise<{ ok: boolean }> {
   const mb = await db
     .from('mailboxes')
-    .select('id, smartlead_email_account_id')
+    .select('id, smartlead_email_account_id, status')
     .eq('id', mailboxId)
     .maybeSingle();
   if (mb.error) throw mb.error;
   const smartleadId = mb.data?.smartlead_email_account_id as string | null | undefined;
   if (!smartleadId) return { ok: false };
   const stats = await client.getWarmupStats(smartleadId);
+  const reputation = mapWarmupStatsToReputation(stats);
+  // Warmup was active iff the mailbox was previously 'warming'/'warm' (set from the account's
+  // warmup_details at sync time). Promote to 'warm' / demote on this fresh reputation read.
+  const status = String(mb.data?.status ?? '');
+  const warmupActive = status === 'warming' || status === 'warm';
   const upd = await db
     .from('mailboxes')
     .update({
-      reputation: mapWarmupStatsToReputation(stats),
+      reputation,
+      status: classifyWarmth(reputation as { sent?: number; spam?: number }, warmupActive),
       last_synced_at: new Date().toISOString(),
     })
     .eq('id', mailboxId);

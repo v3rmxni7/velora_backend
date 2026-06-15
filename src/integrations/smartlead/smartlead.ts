@@ -110,6 +110,12 @@ export function createSmartleadClient(): SmartleadClient {
       await send('PATCH', `/campaigns/${campaignId}/status`, { status });
     },
     async addLead(campaignId, lead: SmartleadLead): Promise<void> {
+      // Idempotency note (C1): the AUTHORITATIVE same-send guard is Velora's claim-before-push in
+      // executeSend (the send:{org}:{enr}:{step} message row gates this call). Smartlead is a
+      // secondary layer: re-adding an existing email to the SAME campaign updates the lead's custom
+      // fields rather than creating a second lead/send (its default same-campaign de-dup); the flags
+      // below only govern global block/unsubscribe/bounce lists and cross-campaign duplicates. There
+      // is no Smartlead flag that re-enables same-campaign duplication, so we do not rely on one.
       await send('POST', `/campaigns/${campaignId}/leads`, {
         lead_list: [lead],
         settings: {
