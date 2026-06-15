@@ -1,4 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { createMillionVerifier } from '../../integrations/verifier/millionverifier.js';
+import type { EmailVerifier } from '../../integrations/verifier/types.js';
 import { AppError } from '../../lib/errors.js';
 import { getSendingMode } from '../../lib/sending-mode.js';
 import type { GenerateDeps, LeadType } from '../draft/generate.js';
@@ -37,6 +39,7 @@ export interface EnrollmentRecord {
   status: string;
   current_step: number;
   task_id?: string | null;
+  verification?: string | null;
 }
 
 async function leadEmail(
@@ -80,13 +83,14 @@ async function creditBalance(db: SupabaseClient, organizationId: string): Promis
   return (data ?? []).reduce((sum, r) => sum + Number(r.delta), 0);
 }
 
-export type PrepareOutcome = 'prepared' | 'suppressed' | 'no_email' | 'skipped';
+export type PrepareOutcome = 'prepared' | 'suppressed' | 'undeliverable' | 'no_email' | 'skipped';
 
 /** Phase 1: gate a pending enrollment, then generate the grounded draft + approval task. */
 export async function prepareEnrollment(
   db: SupabaseClient,
   enrollment: EnrollmentRecord,
   deps: GenerateDeps = {},
+  verifier: EmailVerifier | null = createMillionVerifier(),
 ): Promise<{ outcome: PrepareOutcome; taskId?: string }> {
   if (enrollment.status !== 'pending') return { outcome: 'skipped' };
   const org = enrollment.organization_id;
@@ -106,6 +110,22 @@ export async function prepareEnrollment(
     return { outcome: 'suppressed' };
   }
 
+  // Verification gate — cheap API call before the expensive LLM draft. Undeliverable
+  // (invalid/disposable) never gets a draft or a send; risky/deliverable proceed (verdict kept
+  // for the send's audit). Skipped when no verifier is configured (sandbox/dev).
+  let verification: 'deliverable' | 'risky' | 'skipped' = 'skipped';
+  if (verifier) {
+    const v = await verifier.verify(email);
+    if (v.verdict === 'undeliverable') {
+      await db
+        .from('enrollments')
+        .update({ status: 'failed', error: `email_${v.result}` })
+        .eq('id', enrollment.id);
+      return { outcome: 'undeliverable' };
+    }
+    verification = v.verdict; // 'deliverable' | 'risky'
+  }
+
   // Credit assessment is recorded at send time (executeSend); non-blocking in dry-run.
 
   const { task } = await runDraftGeneration(
@@ -122,7 +142,12 @@ export async function prepareEnrollment(
 
   await db
     .from('enrollments')
-    .update({ status: 'awaiting_approval', task_id: taskId ?? null })
+    .update({
+      status: 'awaiting_approval',
+      task_id: taskId ?? null,
+      verified_email: email,
+      verification,
+    })
     .eq('id', enrollment.id);
   return { outcome: 'prepared', taskId };
 }
@@ -164,6 +189,7 @@ export async function executeSend(
   // ---- DRY-RUN: write the message; never touch a provider, never debit credits. ----
   const gates = {
     suppressed: false,
+    verification: enrollment.verification ?? 'unknown', // the actual verdict, not a boolean
     credit: assessCredits(await creditBalance(db, org), SEND_COST),
     mode: 'dry_run' as const,
   };
