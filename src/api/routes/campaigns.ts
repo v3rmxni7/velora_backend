@@ -5,6 +5,7 @@ import {
   assertSupportedCampaignType,
   launchCampaign,
 } from '../../agents/sending/enroll.js';
+import { events, inngest } from '../../workers/inngest/client.js';
 import { authenticate, requireAuth } from '../middleware/auth.js';
 
 const CreateCampaign = z.object({
@@ -116,6 +117,19 @@ export const campaignsRoute: FastifyPluginAsync = async (app) => {
       organization_id: c.data.organization_id as string,
       list_id: c.data.list_id as string,
     });
+    // Best-effort: kick the executor to prepare the freshly-enrolled leads (gates → draft → task).
+    try {
+      await inngest.send({
+        name: events.campaignExecute.name,
+        data: {
+          organizationId: c.data.organization_id as string,
+          campaignId: c.data.id as string,
+          dedupeKey: `campaign:${c.data.id}:launch`,
+        },
+      });
+    } catch (err) {
+      request.log.warn({ err, campaignId: id }, 'campaign/execute enqueue failed (non-fatal)');
+    }
     return { data: result };
   });
 

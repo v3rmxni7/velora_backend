@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { runDraftGeneration } from '../../agents/draft/task.js';
+import { type EnrollmentRecord, executeSend } from '../../agents/sending/pipeline.js';
 import { events, inngest } from '../../workers/inngest/client.js';
 import { authenticate, requireAuth } from '../middleware/auth.js';
 
@@ -66,11 +67,27 @@ export const tasksRoute: FastifyPluginAsync = async (app) => {
       .update({ status: 'approved', approved_by: userId, approved_at: new Date().toISOString() })
       .eq('id', id)
       .eq('status', 'pending')
-      .select('id')
+      .select('id, type, campaign_id')
       .maybeSingle();
     if (error) throw error;
     if (!data) return reply.code(404).send({ error: 'not_found_or_not_pending' });
-    return { data };
+
+    // Approving a campaign outbound draft is the send gate → run the (dry-run) send for its
+    // enrollment. Best-effort: the approval already succeeded; surface the send outcome.
+    let send: string | undefined;
+    if (data.type === 'outbound_approval' && data.campaign_id) {
+      try {
+        const enr = await db.from('enrollments').select('*').eq('task_id', id).maybeSingle();
+        if (enr.data) {
+          const res = await executeSend(db, enr.data as EnrollmentRecord);
+          send = res.outcome;
+        }
+      } catch (err) {
+        request.log.error({ err, taskId: id }, 'executeSend after approval failed');
+        send = 'error';
+      }
+    }
+    return { data, send };
   });
 
   app.post('/tasks/:id/reject', async (request, reply) => {
