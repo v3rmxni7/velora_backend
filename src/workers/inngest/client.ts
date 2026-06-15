@@ -36,5 +36,8 @@ export const events = {
 
 export const inngest = new Inngest({
   id: 'velora-backend',
+  // Dev mode locally (works with `npx inngest-cli dev`, no keys); cloud mode in prod,
+  // which is activated by setting INNGEST_SIGNING_KEY + registering the app (deferred).
+  isDev: env.NODE_ENV !== 'production',
   ...(env.INNGEST_EVENT_KEY ? { eventKey: env.INNGEST_EVENT_KEY } : {}),
 });

@@ -1,8 +1,10 @@
 import cors from '@fastify/cors';
 import Fastify from 'fastify';
+import inngestFastify from 'inngest/fastify';
 import { ZodError } from 'zod';
 import { env } from '../config/env.js';
 import { AppError } from '../lib/errors.js';
+import { functions, inngest } from '../workers/inngest/index.js';
 import { coachingPointsRoute } from './routes/coaching-points.js';
 import { copilotRoute } from './routes/copilot.js';
 import { findLeadsRoute } from './routes/find-leads.js';
@@ -12,6 +14,7 @@ import { kbRoute } from './routes/kb.js';
 import { leadsRoute } from './routes/leads.js';
 import { listsRoute } from './routes/lists.js';
 import { proofItemsRoute } from './routes/proof-items.js';
+import { sendingRoute } from './routes/sending.js';
 import { tasksRoute } from './routes/tasks.js';
 
 const app = Fastify({ logger: true });
@@ -46,6 +49,11 @@ async function start(): Promise<void> {
   await app.register(leadsRoute);
   await app.register(tasksRoute);
   await app.register(copilotRoute);
+  await app.register(sendingRoute);
+  // Inngest serve handler at /api/inngest — makes async jobs (draft-generate, and the
+  // Phase-2 campaign/warmup/inbox functions) runnable. The async draft path calls the
+  // SAME runDraftGeneration as the sync /tasks/generate-sync route; both coexist.
+  await app.register(inngestFastify, { client: inngest, functions });
   await app.listen({ port: env.PORT, host: env.HOST });
 }
 
