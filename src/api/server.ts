@@ -11,6 +11,7 @@ import { copilotRoute } from './routes/copilot.js';
 import { findLeadsRoute } from './routes/find-leads.js';
 import { healthRoute } from './routes/health.js';
 import { icpProfilesRoute } from './routes/icp-profiles.js';
+import { inboxRoute } from './routes/inbox.js';
 import { kbRoute } from './routes/kb.js';
 import { leadsRoute } from './routes/leads.js';
 import { listsRoute } from './routes/lists.js';
@@ -55,6 +56,7 @@ async function start(): Promise<void> {
   await app.register(sendingRoute);
   await app.register(sendersRoute);
   await app.register(campaignsRoute);
+  await app.register(inboxRoute);
   // Encapsulated so its raw-body parser stays scoped to the webhook route only.
   await app.register(webhooksRoute);
   // Inngest serve handler at /api/inngest — makes async jobs (draft-generate, and the

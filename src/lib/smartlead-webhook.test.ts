@@ -1,6 +1,6 @@
 import { createHmac } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { eventToUpdate, verifySignature } from './smartlead-webhook.js';
+import { eventToUpdate, isHandledEvent, verifySignature } from './smartlead-webhook.js';
 
 describe('verifySignature (HMAC-SHA256, constant-time)', () => {
   const secret = 'whsec_test';
@@ -34,9 +34,29 @@ describe('eventToUpdate (2.5 scope)', () => {
     expect(eventToUpdate('EMAIL_OPEN')?.status).toBe('opened');
     expect(eventToUpdate('EMAIL_LINK_CLICK')?.status).toBe('clicked');
   });
-  it('reply / bounce / unsubscribe / unknown → null (handled in 2.6)', () => {
+  it('reply / bounce / unsubscribe / unknown → null (richer handling in applySmartleadEvent)', () => {
     for (const e of ['EMAIL_REPLY', 'EMAIL_BOUNCE', 'LEAD_UNSUBSCRIBED', 'WHATEVER', undefined]) {
       expect(eventToUpdate(e)).toBeNull();
     }
+  });
+});
+
+describe('isHandledEvent (2.6 — recognized vs ignored)', () => {
+  it('status events + inbound 2.6 events are recognized', () => {
+    for (const e of [
+      'EMAIL_SENT',
+      'FIRST_EMAIL_SENT',
+      'EMAIL_OPEN',
+      'EMAIL_LINK_CLICK',
+      'EMAIL_REPLY',
+      'EMAIL_BOUNCE',
+      'LEAD_UNSUBSCRIBED',
+    ]) {
+      expect(isHandledEvent(e)).toBe(true);
+    }
+  });
+  it('unknown / missing types are not', () => {
+    expect(isHandledEvent('WHATEVER')).toBe(false);
+    expect(isHandledEvent(undefined)).toBe(false);
   });
 });
