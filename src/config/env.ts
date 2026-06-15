@@ -28,9 +28,11 @@ const EnvSchema = z.object({
   // Scraping (Firecrawl) — KB ingestion, Phase 1 Slice 1.
   FIRECRAWL_API_KEY: z.string().optional(),
 
-  // Sending substrate (Smartlead) — Phase 2. Read-only in Slice 2.1 (mailboxes + warmup).
+  // Sending substrate (Smartlead) — Phase 2. Read-only in Slice 2.1 (mailboxes + warmup);
+  // write + webhook in 2.5. WEBHOOK_SECRET verifies inbound Smartlead webhook signatures.
   SMARTLEAD_API_KEY: z.string().optional(),
   SMARTLEAD_API_URL: z.string().default('https://server.smartlead.ai/api/v1'),
+  SMARTLEAD_WEBHOOK_SECRET: z.string().optional(),
 
   // Email verification (MillionVerifier) — Phase 2 Slice 2.4. Absent → verification skipped.
   MILLIONVERIFIER_API_KEY: z.string().optional(),

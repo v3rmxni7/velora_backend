@@ -18,6 +18,7 @@ import { proofItemsRoute } from './routes/proof-items.js';
 import { sendersRoute } from './routes/senders.js';
 import { sendingRoute } from './routes/sending.js';
 import { tasksRoute } from './routes/tasks.js';
+import { webhooksRoute } from './routes/webhooks.js';
 
 const app = Fastify({ logger: true });
 
@@ -54,6 +55,8 @@ async function start(): Promise<void> {
   await app.register(sendingRoute);
   await app.register(sendersRoute);
   await app.register(campaignsRoute);
+  // Encapsulated so its raw-body parser stays scoped to the webhook route only.
+  await app.register(webhooksRoute);
   // Inngest serve handler at /api/inngest — makes async jobs (draft-generate, and the
   // Phase-2 campaign/warmup/inbox functions) runnable. The async draft path calls the
   // SAME runDraftGeneration as the sync /tasks/generate-sync route; both coexist.

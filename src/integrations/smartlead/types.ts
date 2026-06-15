@@ -28,7 +28,22 @@ export interface SmartleadWarmupStats {
   [k: string]: unknown;
 }
 
+// One lead pushed into a Smartlead campaign — the rendered draft rides in custom_fields,
+// matched by the campaign template's {{velora_subject}}/{{velora_body}} variables.
+export interface SmartleadLead {
+  email: string;
+  custom_fields: Record<string, string>;
+}
+
 export interface SmartleadClient {
+  // --- read (2.1) ---
   listEmailAccounts(): Promise<SmartleadEmailAccount[]>;
   getWarmupStats(emailAccountId: string | number): Promise<SmartleadWarmupStats>;
+  // --- write (2.5) ---
+  createCampaign(name: string): Promise<{ id: string }>;
+  saveSequence(campaignId: string, subjectVar: string, bodyVar: string): Promise<void>;
+  assignEmailAccounts(campaignId: string, emailAccountIds: (string | number)[]): Promise<void>;
+  setSchedule(campaignId: string, maxLeadsPerDay: number): Promise<void>;
+  setStatus(campaignId: string, status: 'START' | 'PAUSED'): Promise<void>;
+  addLead(campaignId: string, lead: SmartleadLead): Promise<void>;
 }

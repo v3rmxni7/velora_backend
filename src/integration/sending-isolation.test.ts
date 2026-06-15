@@ -51,6 +51,15 @@ describe.skipIf(!ready)('Slice 2.1 live — mailbox sync + sending tenant isolat
     async getWarmupStats() {
       return { sent_count: 50, inbox_count: 48, spam_count: 2 };
     },
+    // write methods (unused by 2.1 sync; present to satisfy the SmartleadClient contract)
+    async createCampaign() {
+      return { id: 'noop' };
+    },
+    async saveSequence() {},
+    async assignEmailAccounts() {},
+    async setSchedule() {},
+    async setStatus() {},
+    async addLead() {},
   };
 
   function userDb(token: string) {
