@@ -5,6 +5,7 @@ import { ZodError } from 'zod';
 import { env } from '../config/env.js';
 import { AppError } from '../lib/errors.js';
 import { functions, inngest } from '../workers/inngest/index.js';
+import { campaignsRoute } from './routes/campaigns.js';
 import { coachingPointsRoute } from './routes/coaching-points.js';
 import { copilotRoute } from './routes/copilot.js';
 import { findLeadsRoute } from './routes/find-leads.js';
@@ -52,6 +53,7 @@ async function start(): Promise<void> {
   await app.register(copilotRoute);
   await app.register(sendingRoute);
   await app.register(sendersRoute);
+  await app.register(campaignsRoute);
   // Inngest serve handler at /api/inngest — makes async jobs (draft-generate, and the
   // Phase-2 campaign/warmup/inbox functions) runnable. The async draft path calls the
   // SAME runDraftGeneration as the sync /tasks/generate-sync route; both coexist.
