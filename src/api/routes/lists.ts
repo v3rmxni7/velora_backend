@@ -20,6 +20,10 @@ const UpdateList = z.object({
 });
 const IdParam = z.object({ id: z.uuid() });
 const MemberParam = z.object({ id: z.uuid(), memberId: z.uuid() });
+const MembersQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(200).default(200),
+  offset: z.coerce.number().int().min(0).default(0),
+});
 
 // Incoming provider matches to persist (bounded; unknown keys stripped). Enum fields
 // match the DB CHECK constraints so bad values fail as 400, not a DB error.
@@ -216,16 +220,46 @@ export const listsRoute: FastifyPluginAsync = async (app) => {
     return reply.code(204).send();
   });
 
-  app.get('/lists/:id/members', async (request) => {
+  // Hydrated membership: each member row joined to its lead record (name/title/company etc.) so
+  // the UI can render named, actionable members. list_members is polymorphic (entity_type+entity_id,
+  // no FK) so we hydrate with ONE .in() query per entity-type present — constant round-trips, never
+  // N+1. Org-scoped at every step (the list, the members, the leads are all RLS-confined).
+  app.get('/lists/:id/members', async (request, reply) => {
     const { db } = requireAuth(request);
     const { id } = IdParam.parse(request.params);
-    const { data, error } = await db
+    const { limit, offset } = MembersQuery.parse(request.query);
+
+    // 404 if the list isn't visible to this org (RLS) — clean, no existence leak.
+    const list = await db.from('lists').select('id').eq('id', id).maybeSingle();
+    if (list.error) throw list.error;
+    if (!list.data) return reply.code(404).send({ error: 'not_found' });
+
+    // One query: the page of membership rows + the exact total (for an accurate count when paged).
+    const mem = await db
       .from('list_members')
-      .select('*')
+      .select('*', { count: 'exact' })
       .eq('list_id', id)
-      .order('added_at', { ascending: false });
-    if (error) throw error;
-    return { data };
+      .order('added_at', { ascending: false })
+      .range(offset, offset + limit - 1);
+    if (mem.error) throw mem.error;
+    const rows = mem.data ?? [];
+
+    // Group the page's ids by entity_type, hydrate each type in a single .in() query.
+    const idsByType = new Map<EntityType, string[]>();
+    for (const r of rows) {
+      const t = r.entity_type as EntityType;
+      idsByType.set(t, [...(idsByType.get(t) ?? []), r.entity_id as string]);
+    }
+    const leadById = new Map<string, Row>();
+    for (const [type, ids] of idsByType) {
+      const res = await db.from(TABLE[type]).select('*').in('id', ids);
+      if (res.error) throw res.error;
+      for (const lead of res.data ?? []) leadById.set(lead.id as string, lead as Row);
+    }
+
+    // Orphaned membership (lead deleted — entity_id has no FK/cascade) → lead: null, not an error.
+    const members = rows.map((r) => ({ ...r, lead: leadById.get(r.entity_id as string) ?? null }));
+    return { data: { count: mem.count ?? members.length, limit, offset, members } };
   });
 
   // Add-to-list: persist selected provider matches into the org-scoped entity table,
