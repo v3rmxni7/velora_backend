@@ -27,6 +27,10 @@ const EnvSchema = z.object({
 
   // Scraping (Firecrawl) — KB ingestion, Phase 1 Slice 1.
   FIRECRAWL_API_KEY: z.string().optional(),
+
+  // Sending substrate (Smartlead) — Phase 2. Read-only in Slice 2.1 (mailboxes + warmup).
+  SMARTLEAD_API_KEY: z.string().optional(),
+  SMARTLEAD_API_URL: z.string().default('https://server.smartlead.ai/api/v1'),
 });
 
 const parsed = EnvSchema.safeParse(process.env);

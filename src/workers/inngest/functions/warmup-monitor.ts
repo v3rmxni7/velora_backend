@@ -1,6 +1,10 @@
+import { refreshMailboxWarmup } from '../../../agents/sending/mailbox-sync.js';
+import { getSupabaseAdmin } from '../../../db/client.js';
+import { createSmartleadClient } from '../../../integrations/smartlead/smartlead.js';
 import { events, inngest } from '../client.js';
 
-// Stub: polls mailbox warmup state / reputation.
+// Refresh one mailbox's warmup reputation from Smartlead (service-role write; org from payload).
+// Idempotent per dedupeKey; a mailbox with no Smartlead link is a no-op.
 export const warmupMonitor = inngest.createFunction(
   {
     id: 'warmup-monitor',
@@ -8,5 +12,11 @@ export const warmupMonitor = inngest.createFunction(
     triggers: [{ event: events.warmupCheck }],
   },
   async ({ event, step }) =>
-    step.run('noop', async () => ({ ok: true, dedupeKey: event.data.dedupeKey })),
+    step.run('refresh-warmup', async () => {
+      const db = getSupabaseAdmin();
+      if (!db) throw new Error('Supabase admin client not configured');
+      const { mailboxId } = event.data;
+      const result = await refreshMailboxWarmup(db, createSmartleadClient(), mailboxId);
+      return { ok: result.ok, mailboxId };
+    }),
 );

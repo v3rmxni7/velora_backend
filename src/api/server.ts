@@ -14,6 +14,7 @@ import { kbRoute } from './routes/kb.js';
 import { leadsRoute } from './routes/leads.js';
 import { listsRoute } from './routes/lists.js';
 import { proofItemsRoute } from './routes/proof-items.js';
+import { sendersRoute } from './routes/senders.js';
 import { sendingRoute } from './routes/sending.js';
 import { tasksRoute } from './routes/tasks.js';
 
@@ -50,6 +51,7 @@ async function start(): Promise<void> {
   await app.register(tasksRoute);
   await app.register(copilotRoute);
   await app.register(sendingRoute);
+  await app.register(sendersRoute);
   // Inngest serve handler at /api/inngest — makes async jobs (draft-generate, and the
   // Phase-2 campaign/warmup/inbox functions) runnable. The async draft path calls the
   // SAME runDraftGeneration as the sync /tasks/generate-sync route; both coexist.
