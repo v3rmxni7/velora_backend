@@ -36,6 +36,11 @@ const EnvSchema = z.object({
 
   // Email verification (MillionVerifier) — Phase 2 Slice 2.4. Absent → verification skipped.
   MILLIONVERIFIER_API_KEY: z.string().optional(),
+
+  // Send volume governor (Slice 2.9 / audit H4) — Velora-side daily ceilings enforced at the send
+  // chokepoint, independent of Smartlead's per-campaign cap. Conservative pilot defaults.
+  DAILY_SEND_CAP_PER_ORG: z.coerce.number().int().nonnegative().default(50),
+  DAILY_SEND_CAP_GLOBAL: z.coerce.number().int().nonnegative().default(200),
 });
 
 const parsed = EnvSchema.safeParse(process.env);

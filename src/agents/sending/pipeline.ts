@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { env } from '../../config/env.js';
 import { getSupabaseAdmin } from '../../db/client.js';
 import { createSmartleadClient } from '../../integrations/smartlead/smartlead.js';
 import type { SmartleadClient } from '../../integrations/smartlead/types.js';
@@ -170,8 +171,36 @@ export type SendOutcome =
   | 'suppressed'
   | 'insufficient_credit'
   | 'verification_required'
+  | 'rate_limited'
+  | 'halted'
+  | 'invalid'
   | 'duplicate'
   | 'skipped';
+
+export interface SendCaps {
+  perOrg: number;
+  global: number;
+}
+/** Pure: is a send over either daily ceiling? (Counts are "already sent today".) */
+export function assessSendRate(orgCount: number, globalCount: number, caps: SendCaps): boolean {
+  return orgCount >= caps.perOrg || globalCount >= caps.global;
+}
+
+/** Count today's real (non-dry-run) outbound sends — org-scoped and/or global. UTC day. */
+async function countSendsToday(db: SupabaseClient, organizationId?: string): Promise<number> {
+  const since = new Date();
+  since.setUTCHours(0, 0, 0, 0);
+  let q = db
+    .from('messages')
+    .select('id', { count: 'exact', head: true })
+    .eq('direction', 'outbound')
+    .neq('status', 'dry_run')
+    .gte('created_at', since.toISOString());
+  if (organizationId) q = q.eq('organization_id', organizationId);
+  const { count, error } = await q;
+  if (error) throw error;
+  return count ?? 0;
+}
 
 /** Upsert the outbound thread + message and advance the enrollment. Shared by dry-run + live. */
 async function recordOutbound(
@@ -259,6 +288,7 @@ export async function executeSend(
   db: SupabaseClient,
   enrollment: EnrollmentRecord,
   client?: SmartleadClient,
+  caps?: SendCaps,
 ): Promise<{ outcome: SendOutcome; messageId?: string }> {
   if (!enrollment.task_id) return { outcome: 'skipped' };
   const org = enrollment.organization_id;
@@ -292,6 +322,15 @@ export async function executeSend(
   if (mode.sendingEnabled && !mode.dryRun) {
     assertLiveSendAllowed(mode); // defensive; the branch condition already guarantees it
 
+    // M7 — never push an empty draft. The chokepoint does not trust an upstream-stored draft blindly.
+    if (!draft.subject?.trim() || !draft.body?.trim()) {
+      await db
+        .from('enrollments')
+        .update({ status: 'failed', error: 'empty_draft' })
+        .eq('id', enrollment.id);
+      return { outcome: 'invalid' };
+    }
+
     // H3 — fail CLOSED on verification. A live send requires a real verifier verdict; 'skipped'
     // means MillionVerifier was unconfigured at prepare time. Never push an unverified address.
     const verification = enrollment.verification ?? 'unknown';
@@ -321,8 +360,43 @@ export async function executeSend(
       return { outcome: 'skipped' };
     }
 
-    // Provision FIRST (idempotent, campaign-level): a transient provisioning failure must not burn
-    // the per-lead claim below, so it happens before we claim.
+    // Service-role client — required for the cross-org rate count and the credit debit.
+    const admin = getSupabaseAdmin();
+    if (!admin) {
+      throw new AppError('Service-role client unavailable', {
+        code: 'admin_unavailable',
+        statusCode: 503,
+      });
+    }
+
+    // H4 — Velora-side daily volume governor (per-org AND global), enforced at the single send
+    // chokepoint independent of Smartlead's per-campaign cap. Over either ceiling → defer the send
+    // (leave the enrollment 'awaiting_approval' so a later run can pick it up; do NOT fail it).
+    const limits = caps ?? {
+      perOrg: env.DAILY_SEND_CAP_PER_ORG,
+      global: env.DAILY_SEND_CAP_GLOBAL,
+    };
+    const [orgToday, globalToday] = await Promise.all([
+      countSendsToday(admin, org),
+      countSendsToday(admin),
+    ]);
+    if (assessSendRate(orgToday, globalToday, limits)) {
+      return { outcome: 'rate_limited' };
+    }
+
+    const dedupeKey = `send:${org}:${enrollment.id}:${enrollment.current_step}`;
+    // C1 pre-check — a retry whose send was already claimed returns 'duplicate' before any push.
+    const pre = await db
+      .from('messages')
+      .select('id')
+      .eq('organization_id', org)
+      .eq('dedupe_key', dedupeKey)
+      .maybeSingle();
+    if (pre.error) throw pre.error;
+    if (pre.data) return { outcome: 'duplicate', messageId: pre.data.id as string };
+
+    // Provision (H5 — serialized to exactly one Smartlead campaign) BEFORE the CAS, so a transient
+    // provisioning failure leaves the enrollment sendable rather than being misread as a halt.
     const sl = client ?? createSmartleadClient();
     const campaign = await db
       .from('campaigns')
@@ -341,17 +415,27 @@ export async function executeSend(
       sl,
     );
 
+    // M2 — compare-and-swap: only send if the enrollment is STILL sendable. If a reply/bounce/unsub
+    // landed during the window it is no longer 'awaiting_approval' → halt (no push). Atomic.
+    const cas = await db
+      .from('enrollments')
+      .update({ status: 'queued' })
+      .eq('id', enrollment.id)
+      .eq('status', 'awaiting_approval')
+      .select('id');
+    if (cas.error) throw cas.error;
+    if ((cas.data ?? []).length === 0) return { outcome: 'halted' };
+
     const gates = {
       suppressed: false,
       verification,
       credit,
       mode: 'live' as const,
     };
-    // C1 — CLAIM BEFORE PUSH. Write the send:{org}:{enr}:{step} dedupe message FIRST. Only the
-    // caller that actually created the row (created === true) may perform the irreversible push;
-    // any retry sees created === false and refuses to re-send. This is at-most-once: the dedupe
-    // key GATES the push rather than following it, so a crash/timeout/retry can never double-send.
-    const { messageId, dedupeKey, created } = await recordOutbound(db, enrollment, draft, {
+    // C1 — CLAIM BEFORE PUSH. Write the dedupe message; only the creator (created === true) may
+    // push. Any concurrent/retry caller sees created === false and refuses to re-send (at-most-once:
+    // the dedupe key GATES the push rather than following it, so a crash/retry never double-sends).
+    const { messageId, created } = await recordOutbound(db, enrollment, draft, {
       messageStatus: 'queued',
       enrollmentStatus: 'queued',
       gates,
@@ -375,15 +459,7 @@ export async function executeSend(
       throw err;
     }
 
-    // Debit credits via the service-role client (credit_ledger has no authenticated-insert policy).
-    // idempotency_key blocks a double-charge on retry; a unique-violation (23505) is a no-op.
-    const admin = getSupabaseAdmin();
-    if (!admin) {
-      throw new AppError('Service-role client unavailable for credit debit', {
-        code: 'admin_unavailable',
-        statusCode: 503,
-      });
-    }
+    // Debit credits (service-role). idempotency_key blocks a double-charge on retry; 23505 = no-op.
     const debit = await admin.from('credit_ledger').insert({
       organization_id: org,
       delta: -SEND_COST,

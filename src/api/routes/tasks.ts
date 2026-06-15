@@ -115,9 +115,28 @@ export const tasksRoute: FastifyPluginAsync = async (app) => {
       .eq('status', 'pending')
       .eq('type', 'outbound_approval');
     if (ids && ids.length > 0) q = q.in('id', ids);
-    const { data, error } = await q.select('id');
+    const { data, error } = await q.select('id, campaign_id');
     if (error) throw error;
-    return { approved: (data ?? []).length };
+    const approvedTasks = data ?? [];
+
+    // M1 — bulk approval must flow through the SAME send chokepoint as single approve, so it
+    // inherits every gate (suppression / verification / credit / rate governor). Sequential so the
+    // per-org volume governor (H4) counts each send before deciding the next.
+    const sent: Record<string, number> = {};
+    for (const task of approvedTasks) {
+      if (!task.campaign_id) continue;
+      try {
+        const enr = await db.from('enrollments').select('*').eq('task_id', task.id).maybeSingle();
+        if (enr.data) {
+          const res = await executeSend(db, enr.data as EnrollmentRecord);
+          sent[res.outcome] = (sent[res.outcome] ?? 0) + 1;
+        }
+      } catch (err) {
+        request.log.error({ err, taskId: task.id }, 'executeSend after approve-all failed');
+        sent.error = (sent.error ?? 0) + 1;
+      }
+    }
+    return { approved: approvedTasks.length, sent };
   });
 
   // Enqueue a draft for a saved lead (authorize, then dispatch the idempotent job).

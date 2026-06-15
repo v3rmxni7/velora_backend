@@ -68,7 +68,7 @@ async function suppress(
   db: SupabaseClient,
   org: string,
   email: string,
-  reason: 'bounce' | 'unsubscribe',
+  reason: 'bounce' | 'unsubscribe' | 'reply',
 ): Promise<void> {
   const { error } = await db
     .from('suppression_list')
@@ -114,13 +114,24 @@ export async function applySmartleadEvent(
   if (type === 'EMAIL_REPLY') {
     const t = await resolveTarget(db, event);
     if (!t) return { handled: false };
+
+    // M5 — idempotent on the Smartlead message id. Pre-check the inbound message; if it already
+    // exists (a replayed/duplicate webhook), this is a no-op — crucially we do NOT call the LLM
+    // classifier again (no cost amplification on replays) and do not re-run the writes.
+    const dedupeKey = `reply:${t.org}:${t.enrollmentId}:${event.message_id ?? 'na'}`;
+    const existing = await db
+      .from('messages')
+      .select('id')
+      .eq('organization_id', t.org)
+      .eq('dedupe_key', dedupeKey)
+      .maybeSingle();
+    if (existing.error) throw existing.error;
+    if (existing.data) return { handled: true };
+
     const classify = deps.classify ?? classifyReply;
     const replyBody = event.reply_body ?? event.reply_message ?? event.body ?? '';
     const category = await classify(replyBody);
 
-    // Inbound message — idempotent on the Smartlead message id so a retried webhook never
-    // writes a second reply. dedupe_key is scoped per-org (the unique key is (org, dedupe_key)).
-    const dedupeKey = `reply:${t.org}:${t.enrollmentId}:${event.message_id ?? 'na'}`;
     const insMsg = await db.from('messages').upsert(
       {
         organization_id: t.org,
@@ -147,6 +158,10 @@ export async function applySmartleadEvent(
     // HALT: terminal status removes the lead from the executor's 'pending' work set.
     const enr = await db.from('enrollments').update({ status: 'replied' }).eq('id', t.enrollmentId);
     if (enr.error) throw enr.error;
+    // H1 — a reply suppresses the PERSON globally: they engaged, so the machine stops contacting
+    // them across ALL campaigns (the suppression gates block re-enrollment elsewhere). Decision
+    // locked; "interested"-reply routing to a human is a later refinement.
+    await suppress(db, t.org, t.recipient, 'reply');
     return { handled: true };
   }
 
