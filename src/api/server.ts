@@ -8,6 +8,7 @@ import { functions, inngest } from '../workers/inngest/index.js';
 import { campaignsRoute } from './routes/campaigns.js';
 import { coachingPointsRoute } from './routes/coaching-points.js';
 import { copilotRoute } from './routes/copilot.js';
+import { deliverabilityRoute } from './routes/deliverability.js';
 import { findLeadsRoute } from './routes/find-leads.js';
 import { healthRoute } from './routes/health.js';
 import { icpProfilesRoute } from './routes/icp-profiles.js';
@@ -57,6 +58,7 @@ async function start(): Promise<void> {
   await app.register(sendersRoute);
   await app.register(campaignsRoute);
   await app.register(inboxRoute);
+  await app.register(deliverabilityRoute);
   // Encapsulated so its raw-body parser stays scoped to the webhook route only.
   await app.register(webhooksRoute);
   // Inngest serve handler at /api/inngest — makes async jobs (draft-generate, and the
