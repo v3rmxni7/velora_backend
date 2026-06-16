@@ -7,7 +7,7 @@ import { events, inngest } from '../../workers/inngest/client.js';
 import { authenticate, requireAuth } from '../middleware/auth.js';
 
 const ListQuery = z.object({
-  type: z.enum(['outbound_approval', 'manual', 'platform']).optional(),
+  type: z.enum(['outbound_approval', 'manual', 'platform', 'reply_approval']).optional(),
   status: z.enum(['pending', 'approved', 'rejected', 'dismissed']).optional(),
   search: z.string().min(1).max(200).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
@@ -21,7 +21,7 @@ const GenerateBody = z.object({
   campaignId: z.uuid().optional(),
 });
 
-type CountKey = 'outbound_approval' | 'manual' | 'platform';
+type CountKey = 'outbound_approval' | 'manual' | 'platform' | 'reply_approval';
 
 export const tasksRoute: FastifyPluginAsync = async (app) => {
   app.addHook('preHandler', authenticate);
@@ -43,7 +43,12 @@ export const tasksRoute: FastifyPluginAsync = async (app) => {
     const { db } = requireAuth(request);
     const { data, error } = await db.from('tasks').select('type').eq('status', 'pending');
     if (error) throw error;
-    const pending: Record<CountKey, number> = { outbound_approval: 0, manual: 0, platform: 0 };
+    const pending: Record<CountKey, number> = {
+      outbound_approval: 0,
+      manual: 0,
+      platform: 0,
+      reply_approval: 0,
+    };
     for (const r of data ?? []) {
       const t = r.type as CountKey;
       if (t in pending) pending[t] += 1;
