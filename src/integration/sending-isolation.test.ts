@@ -60,6 +60,7 @@ describe.skipIf(!ready)('Slice 2.1 live — mailbox sync + sending tenant isolat
     async setSchedule() {},
     async setStatus() {},
     async addLead() {},
+    async sendReply() {},
   };
 
   function userDb(token: string) {

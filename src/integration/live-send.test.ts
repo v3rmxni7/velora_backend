@@ -62,6 +62,7 @@ describe.skipIf(!ready)('Slice 2.5 live — LIVE send via fake Smartlead (zero r
     async addLead(_c, lead) {
       addLeadCalls.push(lead);
     },
+    async sendReply() {},
   };
 
   function userDb(token: string) {

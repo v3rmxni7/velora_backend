@@ -1,4 +1,4 @@
-import type { AutonomyMode } from '../../lib/autonomy-mode.js';
+import type { AutoApprovalDraft, AutonomyMode } from '../../lib/autonomy-mode.js';
 import type { ReplyCategory } from './classify.js';
 
 // Reply-side autonomy decision (Phase 3 Slice 3.0). PURE + deterministic. NOTHING is wired into
@@ -79,4 +79,29 @@ export function routeReply(action: ReplyAction, relaxed: boolean): ReplyRoute {
     default: // 'suppress'
       return { suppress: true, threadStatus: relaxed ? 'auto_handled' : 'needs_action' };
   }
+}
+
+export interface ReplyAutoSendDecision {
+  action: 'auto_send' | 'escalate';
+  reason: string;
+}
+
+/**
+ * Slice 3.4 — may a reply DRAFT be auto-SENT (vs left for human approval)? PURE. The heaviest gate
+ * in the system: autonomy on AND reply mode is the deliberate 'send' opt-in AND the draft is
+ * personalized (cited a proof fact — the safe fallback is 'template' → never auto-sends) AND it
+ * passed verification AND clears the confidence floor. Everything else escalates to a human. (The
+ * two-flag invariant + suppression re-check still gate the actual send at the chokepoint.)
+ */
+export function decideReplyAutoSend(
+  draft: AutoApprovalDraft,
+  mode: AutonomyMode,
+): ReplyAutoSendDecision {
+  if (!mode.autonomyEnabled) return { action: 'escalate', reason: 'autonomy_disabled' };
+  if (mode.autoReply !== 'send') return { action: 'escalate', reason: 'auto_reply_not_send' };
+  if (draft.draftMode !== 'personalized') return { action: 'escalate', reason: 'not_personalized' };
+  if (!draft.grounding.verification.ok) return { action: 'escalate', reason: 'unverified' };
+  if (draft.confidence < mode.minConfidence)
+    return { action: 'escalate', reason: 'below_confidence_threshold' };
+  return { action: 'auto_send', reason: 'personalized_verified_high_confidence' };
 }

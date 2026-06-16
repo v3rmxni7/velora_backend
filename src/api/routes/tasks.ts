@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { runDraftGeneration } from '../../agents/draft/task.js';
+import { executeReplySend } from '../../agents/reply/send.js';
 import { type EnrollmentRecord, executeSend } from '../../agents/sending/pipeline.js';
 import { events, inngest } from '../../workers/inngest/client.js';
 import { authenticate, requireAuth } from '../middleware/auth.js';
@@ -72,8 +73,9 @@ export const tasksRoute: FastifyPluginAsync = async (app) => {
     if (error) throw error;
     if (!data) return reply.code(404).send({ error: 'not_found_or_not_pending' });
 
-    // Approving a campaign outbound draft is the send gate → run the (dry-run) send for its
-    // enrollment. Best-effort: the approval already succeeded; surface the send outcome.
+    // Approving a draft is the send gate → run the (dry-run) send through the chokepoint. Best-effort:
+    // the approval already succeeded; surface the outcome. Cold drafts → executeSend; reply drafts
+    // (3.4) → executeReplySend. Both dry-run unless the two sending flags are flipped.
     let send: string | undefined;
     if (data.type === 'outbound_approval' && data.campaign_id) {
       try {
@@ -84,6 +86,14 @@ export const tasksRoute: FastifyPluginAsync = async (app) => {
         }
       } catch (err) {
         request.log.error({ err, taskId: id }, 'executeSend after approval failed');
+        send = 'error';
+      }
+    } else if (data.type === 'reply_approval') {
+      try {
+        const res = await executeReplySend(db, id);
+        send = res.outcome;
+      } catch (err) {
+        request.log.error({ err, taskId: id }, 'executeReplySend after approval failed');
         send = 'error';
       }
     }

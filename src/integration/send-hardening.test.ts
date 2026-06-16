@@ -51,6 +51,7 @@ function makeFake(): { client: SmartleadClient; pushes: string[]; failNextPush: 
         throw new Error('simulated push failure (delivery uncertain)');
       }
     },
+    async sendReply() {},
   };
   return { client, pushes, failNextPush: () => (fail = true) };
 }

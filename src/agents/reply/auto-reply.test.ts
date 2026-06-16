@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import type { AutonomyMode } from '../../lib/autonomy-mode.js';
-import { decideReplyAction, isExplicitStop, routeReply } from './auto-reply.js';
+import type { AutoApprovalDraft, AutonomyMode } from '../../lib/autonomy-mode.js';
+import {
+  decideReplyAction,
+  decideReplyAutoSend,
+  isExplicitStop,
+  routeReply,
+} from './auto-reply.js';
 import { REPLY_CATEGORIES } from './classify.js';
 
 const mode = (over: Partial<AutonomyMode> = {}): AutonomyMode => ({
@@ -104,5 +109,49 @@ describe('routeReply (decision → concrete effects)', () => {
   });
   it('suppress in off-mode → suppress + needs_action (EXACTLY Phase-2)', () => {
     expect(routeReply('suppress', false)).toEqual({ suppress: true, threadStatus: 'needs_action' });
+  });
+});
+
+describe('decideReplyAutoSend (the heaviest gate — autonomous reply SEND)', () => {
+  const mode = (over: Partial<AutonomyMode> = {}): AutonomyMode => ({
+    autonomyEnabled: true,
+    minConfidence: 0.8,
+    autoReply: 'send',
+    ...over,
+  });
+  const draft = (over: Partial<AutoApprovalDraft> = {}): AutoApprovalDraft => ({
+    draftMode: 'personalized',
+    confidence: 0.95,
+    grounding: { verification: { ok: true } },
+    ...over,
+  });
+
+  it('personalized + verified + ≥floor + send-mode → auto_send', () => {
+    expect(decideReplyAutoSend(draft(), mode()).action).toBe('auto_send');
+  });
+  it('autonomy disabled → escalate (kill switch)', () => {
+    expect(decideReplyAutoSend(draft(), mode({ autonomyEnabled: false }))).toEqual({
+      action: 'escalate',
+      reason: 'autonomy_disabled',
+    });
+  });
+  it("auto_reply_mode='draft' (not send) → escalate", () => {
+    expect(decideReplyAutoSend(draft(), mode({ autoReply: 'draft' })).reason).toBe(
+      'auto_reply_not_send',
+    );
+  });
+  it('template draft → escalate (the safe fallback never auto-sends)', () => {
+    expect(decideReplyAutoSend(draft({ draftMode: 'template' }), mode()).reason).toBe(
+      'not_personalized',
+    );
+  });
+  it('unverified → escalate', () => {
+    const d = draft({ grounding: { verification: { ok: false } } });
+    expect(decideReplyAutoSend(d, mode()).reason).toBe('unverified');
+  });
+  it('below the confidence floor → escalate', () => {
+    expect(decideReplyAutoSend(draft({ confidence: 0.5 }), mode()).reason).toBe(
+      'below_confidence_threshold',
+    );
   });
 });

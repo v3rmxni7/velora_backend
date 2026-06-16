@@ -35,6 +35,16 @@ export interface SmartleadLead {
   custom_fields: Record<string, string>;
 }
 
+// One in-thread reply (Phase 3 Slice 3.4). `inReplyToMessageId` is the inbound reply's Smartlead
+// message id (stored on our inbound message). The exact payload is verified at go-live; the dry-run
+// path never calls this.
+export interface SmartleadReply {
+  email: string;
+  subject: string | null;
+  body: string;
+  inReplyToMessageId: string | null;
+}
+
 export interface SmartleadClient {
   // --- read (2.1) ---
   listEmailAccounts(): Promise<SmartleadEmailAccount[]>;
@@ -46,4 +56,6 @@ export interface SmartleadClient {
   setSchedule(campaignId: string, maxLeadsPerDay: number): Promise<void>;
   setStatus(campaignId: string, status: 'START' | 'PAUSED'): Promise<void>;
   addLead(campaignId: string, lead: SmartleadLead): Promise<void>;
+  // --- reply (3.4) — an in-thread response, NOT a new cold lead ---
+  sendReply(campaignId: string, reply: SmartleadReply): Promise<void>;
 }

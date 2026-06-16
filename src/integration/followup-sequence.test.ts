@@ -71,6 +71,7 @@ describe.skipIf(!ready)(
       async addLead(_c, lead) {
         addLeadCalls.push({ email: lead.email });
       },
+      async sendReply() {},
     };
 
     async function setAutonomy(enabled: boolean) {

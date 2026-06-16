@@ -4,6 +4,7 @@ import type {
   SmartleadClient,
   SmartleadEmailAccount,
   SmartleadLead,
+  SmartleadReply,
   SmartleadWarmupStats,
 } from './types.js';
 
@@ -124,6 +125,19 @@ export function createSmartleadClient(): SmartleadClient {
           ignore_community_bounce_list: false,
           ignore_duplicate_leads_in_other_campaign: false,
         },
+      });
+    },
+    async sendReply(campaignId, reply: SmartleadReply): Promise<void> {
+      // In-thread reply via the master-inbox API. Idempotency note (C1): the AUTHORITATIVE
+      // same-send guard is Velora's claim-before-push in executeReplySend (the reply_send:{org}:
+      // {task} message row gates this call). Exact payload verified at go-live (the dry-run path
+      // never reaches here).
+      await send('POST', `/campaigns/${campaignId}/reply-email-thread`, {
+        email_stats_id: reply.inReplyToMessageId,
+        email_body: reply.body,
+        reply_email_body: reply.body,
+        to_email: reply.email,
+        subject: reply.subject ?? '',
       });
     },
   };

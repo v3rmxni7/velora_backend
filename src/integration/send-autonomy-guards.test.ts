@@ -51,6 +51,7 @@ function makeFake(): { client: SmartleadClient; pushes: string[]; creates: numbe
     async addLead(_c, lead) {
       state.pushes.push(lead.email);
     },
+    async sendReply() {},
   };
   return {
     client,

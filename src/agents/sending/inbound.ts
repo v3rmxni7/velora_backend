@@ -167,6 +167,8 @@ export async function applySmartleadEvent(
         body: replyBody || null,
         status: 'replied',
         category,
+        // Store the inbound Smartlead message id — the thread reference a live reply (3.4) needs.
+        smartlead_message_id: event.message_id ? String(event.message_id) : null,
         dedupe_key: dedupeKey,
       },
       { onConflict: 'organization_id,dedupe_key', ignoreDuplicates: true },
