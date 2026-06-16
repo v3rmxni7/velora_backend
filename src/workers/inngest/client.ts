@@ -39,6 +39,25 @@ export const events = {
       Dedupe & { organizationId: string; enrollmentId: string; nextStep: number; dueTs: number }
     >(),
   }),
+  // Phase 3 Slice 3.3b — an 'engage' reply needs a grounded draft for human review. The consumer
+  // composes it + files a reply_approval task. dedupeKey = `reply_draft:${enrollmentId}:${msgId}`.
+  replyDraft: eventType('reply/draft.requested', {
+    schema: staticSchema<
+      Dedupe & {
+        organizationId: string;
+        enrollmentId: string;
+        threadId: string;
+        inboundMessageId: string;
+        category:
+          | 'interested'
+          | 'not_interested'
+          | 'objection'
+          | 'out_of_office'
+          | 'unsubscribe'
+          | 'other';
+      }
+    >(),
+  }),
 };
 
 export const inngest = new Inngest({

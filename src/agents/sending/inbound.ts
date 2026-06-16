@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { getAutonomyMode, recordAutonomyEvent } from '../../lib/autonomy-mode.js';
 import { eventToUpdate, type SmartleadEvent } from '../../lib/smartlead-webhook.js';
+import { events, inngest } from '../../workers/inngest/client.js';
 import { decideReplyAction, routeReply } from '../reply/auto-reply.js';
 import { classifyReply, type ReplyCategory } from '../reply/classify.js';
 
@@ -15,8 +16,30 @@ import { classifyReply, type ReplyCategory } from '../reply/classify.js';
 // "HALT" is just the terminal enrollment status: campaignExecutor only ever processes 'pending',
 // so a replied/bounced/unsubscribed lead is never sent to again. (Multi-step next-step cancel: 2.7.)
 
+/** Request to draft a grounded reply for an 'engage' reply (Slice 3.3b). */
+export interface ReplyDraftRequest {
+  organizationId: string;
+  enrollmentId: string;
+  threadId: string;
+  inboundMessageId: string;
+  category: ReplyCategory;
+}
+
 export interface InboundDeps {
   classify?: (body: string) => Promise<ReplyCategory>;
+  /** Enqueue the async reply-draft job (default = Inngest emit). Injected as a spy in tests. */
+  enqueueReplyDraft?: (input: ReplyDraftRequest) => Promise<void>;
+}
+
+/** Default enqueue — emit the reply/draft.requested event (idempotent on the draft dedupe key). */
+async function defaultEnqueueReplyDraft(input: ReplyDraftRequest): Promise<void> {
+  await inngest.send({
+    name: events.replyDraft.name,
+    data: {
+      ...input,
+      dedupeKey: `reply_draft:${input.enrollmentId}:${input.inboundMessageId}`,
+    },
+  });
 }
 
 export type ApplyResult = { handled: boolean };
@@ -187,6 +210,27 @@ export async function applySmartleadEvent(
         });
       } catch (err) {
         console.error('[inbound] reply autonomy audit failed', {
+          enrollmentId: t.enrollmentId,
+          err,
+        });
+      }
+    }
+
+    // 3.3b — an 'engage' reply gets a grounded AI draft for HUMAN review (a reply_approval task),
+    // generated async so the webhook stays fast. Best-effort: a failed enqueue still leaves the
+    // thread needs_action (from the routing above) for a manual reply. Never sent — that is 3.4.
+    if (action === 'engage' && t.threadId) {
+      const enqueue = deps.enqueueReplyDraft ?? defaultEnqueueReplyDraft;
+      try {
+        await enqueue({
+          organizationId: t.org,
+          enrollmentId: t.enrollmentId,
+          threadId: t.threadId,
+          inboundMessageId: String(event.message_id ?? 'na'),
+          category,
+        });
+      } catch (err) {
+        console.error('[inbound] reply draft enqueue failed', {
           enrollmentId: t.enrollmentId,
           err,
         });

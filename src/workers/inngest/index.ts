@@ -4,6 +4,7 @@ import { draftGenerate } from './functions/draft-generate.js';
 import { enrichment } from './functions/enrichment.js';
 import { inboxPoller } from './functions/inbox-poller.js';
 import { kbIngest } from './functions/kb-ingest.js';
+import { replyDraft } from './functions/reply-draft.js';
 import { warmupMonitor } from './functions/warmup-monitor.js';
 
 export { inngest } from './client.js';
@@ -17,4 +18,5 @@ export const functions = [
   enrichment,
   kbIngest,
   draftGenerate,
+  replyDraft,
 ];
