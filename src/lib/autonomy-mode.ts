@@ -81,3 +81,33 @@ export function decideAutoApproval(
     return { action: 'escalate', reason: 'below_confidence_threshold' };
   return { action: 'auto_send', reason: 'personalized_verified_high_confidence' };
 }
+
+// ---- autonomy_events audit (Slice 3.1) — append-only record of every autonomous decision ----
+
+/** One audit row. `decision` spans cold-send (auto_send|escalate) and reply (suppress|engage|escalate|snooze). */
+export interface AutonomyEvent {
+  organizationId: string;
+  kind: 'cold_send' | 'reply';
+  enrollmentId?: string | null;
+  taskId?: string | null;
+  decision: 'auto_send' | 'escalate' | 'suppress' | 'engage' | 'snooze';
+  reason: string;
+  confidence?: number | null;
+}
+
+/**
+ * Append one autonomy_events row. Throws on a DB error — callers decide whether the audit is a
+ * precondition (cold send: no autonomous send without an audit) or best-effort (reply shadow).
+ */
+export async function recordAutonomyEvent(db: SupabaseClient, e: AutonomyEvent): Promise<void> {
+  const { error } = await db.from('autonomy_events').insert({
+    organization_id: e.organizationId,
+    kind: e.kind,
+    enrollment_id: e.enrollmentId ?? null,
+    task_id: e.taskId ?? null,
+    decision: e.decision,
+    reason: e.reason,
+    confidence: e.confidence ?? null,
+  });
+  if (error) throw error;
+}

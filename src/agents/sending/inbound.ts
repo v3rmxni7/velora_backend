@@ -1,5 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { getAutonomyMode, recordAutonomyEvent } from '../../lib/autonomy-mode.js';
 import { eventToUpdate, type SmartleadEvent } from '../../lib/smartlead-webhook.js';
+import { decideReplyAction } from '../reply/auto-reply.js';
 import { classifyReply, type ReplyCategory } from '../reply/classify.js';
 
 // Inbound-event core (Phase 2 Slice 2.6). The webhook route verifies the HMAC signature over the
@@ -162,6 +164,30 @@ export async function applySmartleadEvent(
     // them across ALL campaigns (the suppression gates block re-enrollment elsewhere). Decision
     // locked; "interested"-reply routing to a human is a later refinement.
     await suppress(db, t.org, t.recipient, 'reply');
+
+    // 3.1 — reply autonomy DECISION POINT + audit, in SHADOW only. Gated on autonomy_enabled; the
+    // computed action is RECORDED, never routed (the unconditional suppress + needs_action above is
+    // the live behavior). Acting on it — engage/draft, snooze — is Slice 3.3. Best-effort: a failed
+    // audit must never break reply handling (the safety effects already happened).
+    try {
+      const mode = await getAutonomyMode(db, t.org);
+      if (mode.autonomyEnabled) {
+        const action = decideReplyAction(category, replyBody, mode); // isExplicitStop applied inside
+        await recordAutonomyEvent(db, {
+          organizationId: t.org,
+          kind: 'reply',
+          enrollmentId: t.enrollmentId,
+          decision: action,
+          reason: category,
+          confidence: null,
+        });
+      }
+    } catch (err) {
+      console.error('[inbound] reply autonomy shadow audit failed', {
+        enrollmentId: t.enrollmentId,
+        err,
+      });
+    }
     return { handled: true };
   }
 
