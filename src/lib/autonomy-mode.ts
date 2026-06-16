@@ -84,13 +84,16 @@ export function decideAutoApproval(
 
 // ---- autonomy_events audit (Slice 3.1) — append-only record of every autonomous decision ----
 
-/** One audit row. `decision` spans cold-send (auto_send|escalate) and reply (suppress|engage|escalate|snooze). */
+/**
+ * One audit row. `decision` spans cold-send (auto_send|escalate), reply (suppress|engage|escalate|
+ * snooze), and the self-protection monitor (auto_pause). enrollment/task are null for an auto_pause.
+ */
 export interface AutonomyEvent {
   organizationId: string;
-  kind: 'cold_send' | 'reply';
+  kind: 'cold_send' | 'reply' | 'auto_pause';
   enrollmentId?: string | null;
   taskId?: string | null;
-  decision: 'auto_send' | 'escalate' | 'suppress' | 'engage' | 'snooze';
+  decision: 'auto_send' | 'escalate' | 'suppress' | 'engage' | 'snooze' | 'auto_pause';
   reason: string;
   confidence?: number | null;
 }

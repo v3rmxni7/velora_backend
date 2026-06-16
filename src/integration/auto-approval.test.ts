@@ -391,8 +391,8 @@ describe.skipIf(!ready)(
       await setSending(orgA, false, true); // restore safe default
     }, 90_000);
 
-    it('reply SHADOW: relaxed mode records the decision (engage) WITHOUT routing — behavior stays Phase-2', async () => {
-      await setAutonomy(orgA, true, 'send'); // most permissive reply mode — yet 3.1 must NOT act
+    it('relaxed reply (interested) → engage decision recorded + ROUTED: replied + needs_action + NOT suppressed (3.3)', async () => {
+      await setAutonomy(orgA, true, 'send'); // relaxed reply mode
       const enrId = await seedSent(`reply+${stamp}@x.com`, `rep:${stamp}`);
       const res = await applySmartleadEvent(
         admin,
@@ -407,14 +407,15 @@ describe.skipIf(!ready)(
       );
       expect(res.handled).toBe(true);
 
-      // Shadow decision recorded: interested + relaxed → engage (what 3.3 WILL act on).
+      // Decision recorded: interested + relaxed → engage.
       const audit = await auditRows(enrId);
       expect(audit.length).toBe(1);
       expect(audit[0]?.kind).toBe('reply');
       expect(audit[0]?.decision).toBe('engage');
       expect(audit[0]?.reason).toBe('interested');
 
-      // Behavior UNCHANGED (Phase-2): replied + needs_action + global suppression.
+      // 3.3 routing: the sequence HALTS (replied) + a human reviews (needs_action), but engage is
+      // NOT globally suppressed (the conversation continues) — the relaxation of the Phase-2 blanket.
       const enr = await admin
         .from('enrollments')
         .select('status, thread_id')
@@ -432,7 +433,7 @@ describe.skipIf(!ready)(
         .select('reason')
         .eq('organization_id', orgA)
         .eq('email', `reply+${stamp}@x.com`);
-      expect(sup.data?.[0]?.reason).toBe('reply');
+      expect((sup.data ?? []).length).toBe(0); // engage → NOT suppressed (3.3)
     }, 60_000);
 
     it('reply with autonomy_off → NO audit row, same Phase-2 behavior', async () => {

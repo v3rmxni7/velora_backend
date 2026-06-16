@@ -41,6 +41,13 @@ const EnvSchema = z.object({
   // chokepoint, independent of Smartlead's per-campaign cap. Conservative pilot defaults.
   DAILY_SEND_CAP_PER_ORG: z.coerce.number().int().nonnegative().default(50),
   DAILY_SEND_CAP_GLOBAL: z.coerce.number().int().nonnegative().default(200),
+
+  // Anomaly monitor (Slice 3.5) — the self-protection circuit-breaker's thresholds. A breach over a
+  // recent window auto-pauses an org's autonomy. Deterministic; sane conservative defaults.
+  ANOMALY_BOUNCE_RATE: z.coerce.number().min(0).max(1).default(0.05), // > 5% bounce rate breaches
+  ANOMALY_MIN_SENDS: z.coerce.number().int().nonnegative().default(20), // min window sends to judge a rate
+  ANOMALY_MAX_COMPLAINTS: z.coerce.number().int().nonnegative().default(0), // any complaint breaches
+  ANOMALY_WINDOW_HOURS: z.coerce.number().int().positive().default(24), // sliding window for the cohort
 });
 
 const parsed = EnvSchema.safeParse(process.env);

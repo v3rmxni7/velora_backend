@@ -1,3 +1,4 @@
+import { anomalyMonitor } from './functions/anomaly-monitor.js';
 import { campaignExecutor } from './functions/campaign-executor.js';
 import { campaignFollowup } from './functions/campaign-followup.js';
 import { draftGenerate } from './functions/draft-generate.js';
@@ -19,4 +20,5 @@ export const functions = [
   kbIngest,
   draftGenerate,
   replyDraft,
+  anomalyMonitor,
 ];
