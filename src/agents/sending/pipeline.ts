@@ -69,7 +69,7 @@ async function leadEmail(
   return leadType === 'person' ? ((data?.email as string | null) ?? null) : null;
 }
 
-async function isSuppressed(
+export async function isSuppressed(
   db: SupabaseClient,
   organizationId: string,
   email: string,

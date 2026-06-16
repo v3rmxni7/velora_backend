@@ -32,6 +32,13 @@ export const events = {
       }
     >(),
   }),
+  // Phase 3 Slice 3.2 — a follow-up step is due at `dueTs`. The consumer sleeps until then, then
+  // re-checks + sends step `nextStep` (or halts). dedupeKey = `followup:${enrollmentId}:${nextStep}`.
+  campaignFollowup: eventType('campaign/followup.due', {
+    schema: staticSchema<
+      Dedupe & { organizationId: string; enrollmentId: string; nextStep: number; dueTs: number }
+    >(),
+  }),
 };
 
 export const inngest = new Inngest({

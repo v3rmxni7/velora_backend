@@ -39,6 +39,8 @@ export interface GenerateInput {
   leadType: LeadType;
   leadId: string;
   campaignId?: string | null;
+  /** Sequence step (1 = first touch). >1 coaches the Writer to produce a brief follow-up. */
+  stepNumber?: number;
 }
 // Injectable seams (default to the real LLM agents) — lets verification fire the template
 // path deterministically and run the cheap-tier A/B by swapping the provider registry.
@@ -105,6 +107,14 @@ export async function generateDraft(
       .limit(20),
   ]);
   const coaching = (cpRes.data ?? []).map((r) => String(r.content));
+  // Follow-up steps reuse the same grounded pipeline; a coaching line (the Writer is already
+  // coached on `coaching`) steers step 2+ to a genuine brief follow-up rather than a re-send.
+  // Step 1 is untouched — no extra line — so its output is byte-identical to today.
+  if ((input.stepNumber ?? 1) > 1) {
+    coaching.push(
+      'This is a brief follow-up to an earlier, unanswered email. Acknowledge the prior note in one short line, add a single fresh reason to reply, and keep it shorter than a first touch. Do NOT repeat the first email.',
+    );
+  }
   const proof = (piRes.data ?? []).map((r) => ({
     id: String(r.id),
     text: [r.title, r.body].filter(Boolean).join(' — '),

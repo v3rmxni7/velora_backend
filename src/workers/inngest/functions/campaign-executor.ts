@@ -1,5 +1,6 @@
 import type { LeadType } from '../../../agents/draft/generate.js';
 import { runAutoApproval } from '../../../agents/sending/auto-approve.js';
+import { nextFollowupDue } from '../../../agents/sending/followup.js';
 import { type EnrollmentRecord, prepareEnrollment } from '../../../agents/sending/pipeline.js';
 import { getSupabaseAdmin } from '../../../db/client.js';
 import { events, inngest } from '../client.js';
@@ -15,8 +16,8 @@ export const campaignExecutor = inngest.createFunction(
     idempotency: 'event.data.dedupeKey',
     triggers: [{ event: events.campaignExecute }],
   },
-  async ({ event, step }) =>
-    step.run('prepare-enrollments', async () => {
+  async ({ event, step }) => {
+    const prep = await step.run('prepare-enrollments', async () => {
       const db = getSupabaseAdmin();
       if (!db) throw new Error('Supabase admin client not configured');
       const { organizationId, campaignId } = event.data;
@@ -29,7 +30,7 @@ export const campaignExecutor = inngest.createFunction(
         .eq('status', 'pending');
       if (error) throw error;
       let prepared = 0;
-      let autoSent = 0;
+      const autoSentIds: string[] = [];
       for (const enrollment of data ?? []) {
         // Per-enrollment isolation: a single failure escalates that enrollment (it stays
         // awaiting_approval → human queue) without aborting the rest of the batch.
@@ -41,7 +42,7 @@ export const campaignExecutor = inngest.createFunction(
           if (res.outcome !== 'prepared') continue;
           prepared += 1;
           const auto = await runAutoApproval(db, enrollment.id);
-          if (auto?.decision === 'auto_send') autoSent += 1;
+          if (auto?.decision === 'auto_send') autoSentIds.push(enrollment.id as string);
         } catch (err) {
           console.error('[campaign-executor] enrollment failed', {
             enrollmentId: enrollment.id,
@@ -50,12 +51,53 @@ export const campaignExecutor = inngest.createFunction(
         }
       }
       return {
-        ok: true,
         organizationId,
         campaignId,
         prepared,
-        autoSent,
+        autoSentIds,
         total: (data ?? []).length,
       };
-    }),
+    });
+
+    // Schedule the FIRST follow-up for each enrollment that auto-sent step 1 and has a next step.
+    // Durable: the consumer (campaign-followup) sleeps until dueTs, then re-checks + sends.
+    const due = await step.run('compute-followups', async () => {
+      const db = getSupabaseAdmin();
+      if (!db) throw new Error('Supabase admin client not configured');
+      const out: {
+        organizationId: string;
+        enrollmentId: string;
+        nextStep: number;
+        dueTs: number;
+      }[] = [];
+      for (const id of prep.autoSentIds) {
+        const d = await nextFollowupDue(db, id);
+        if (!d) continue;
+        out.push(d);
+        await db
+          .from('enrollments')
+          .update({ scheduled_at: new Date(d.dueTs).toISOString() })
+          .eq('id', id);
+      }
+      return out;
+    });
+    if (due.length > 0) {
+      await step.sendEvent(
+        'schedule-followups',
+        due.map((d) => ({
+          name: events.campaignFollowup.name,
+          data: { ...d, dedupeKey: `followup:${d.enrollmentId}:${d.nextStep}` },
+        })),
+      );
+    }
+
+    return {
+      ok: true,
+      organizationId: prep.organizationId,
+      campaignId: prep.campaignId,
+      prepared: prep.prepared,
+      autoSent: prep.autoSentIds.length,
+      total: prep.total,
+    };
+  },
 );

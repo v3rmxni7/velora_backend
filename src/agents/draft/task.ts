@@ -10,6 +10,8 @@ export interface RunDraftInput {
   leadType: LeadType;
   leadId: string;
   campaignId?: string | null;
+  /** Sequence step (1 = first touch). Namespaces the draft so step 2+ is a distinct task. */
+  stepNumber?: number;
 }
 
 export async function runDraftGeneration(
@@ -18,10 +20,18 @@ export async function runDraftGeneration(
 ): Promise<{ task: Record<string, unknown> | null; payload: DraftPayload }> {
   const { db, organizationId, leadType, leadId } = input;
   const campaignId = input.campaignId ?? null;
+  const stepNumber = input.stepNumber ?? 1;
 
-  const payload = await generateDraft({ db, organizationId, leadType, leadId, campaignId }, deps);
+  const payload = await generateDraft(
+    { db, organizationId, leadType, leadId, campaignId, stepNumber },
+    deps,
+  );
 
-  const dedupeKey = `draft:${organizationId}:${leadType}:${leadId}:${campaignId ?? 'none'}`;
+  // Step 1 keeps the original key byte-identical; step 2+ gets a `:s<n>` suffix so each follow-up
+  // is a distinct task (the previous key would have deduped step 2 back onto step 1's draft).
+  const dedupeKey = `draft:${organizationId}:${leadType}:${leadId}:${campaignId ?? 'none'}${
+    stepNumber > 1 ? `:s${stepNumber}` : ''
+  }`;
   const row = {
     organization_id: organizationId,
     type: 'outbound_approval',
