@@ -1,7 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { getAutonomyMode, recordAutonomyEvent } from '../../lib/autonomy-mode.js';
 import { eventToUpdate, type SmartleadEvent } from '../../lib/smartlead-webhook.js';
-import { decideReplyAction } from '../reply/auto-reply.js';
+import { decideReplyAction, routeReply } from '../reply/auto-reply.js';
 import { classifyReply, type ReplyCategory } from '../reply/classify.js';
 
 // Inbound-event core (Phase 2 Slice 2.6). The webhook route verifies the HMAC signature over the
@@ -150,29 +150,33 @@ export async function applySmartleadEvent(
     );
     if (insMsg.error) throw insMsg.error;
 
+    // 3.3 — ROUTE the reply per the autonomy decision. getAutonomyMode is fail-closed, so a DB
+    // error OR autonomy-off resolves to action='suppress' + relaxed=false → EXACTLY Phase-2
+    // (suppress + needs_action). Only a relaxed org (autonomy on AND auto_reply_mode != 'off') gets
+    // per-category routing; the deterministic stop backstop (inside decideReplyAction) still forces
+    // 'suppress' for explicit-stop bodies even then. The enrollment HALT below is unconditional.
+    const mode = await getAutonomyMode(db, t.org);
+    const action = mode.autonomyEnabled ? decideReplyAction(category, replyBody, mode) : 'suppress';
+    const relaxed = mode.autonomyEnabled && mode.autoReply !== 'off';
+    const route = routeReply(action, relaxed);
+
     if (t.threadId) {
       const thr = await db
         .from('threads')
-        .update({ status: 'needs_action', last_message_at: new Date().toISOString() })
+        .update({ status: route.threadStatus, last_message_at: new Date().toISOString() })
         .eq('id', t.threadId);
       if (thr.error) throw thr.error;
     }
-    // HALT: terminal status removes the lead from the executor's 'pending' work set.
+    // HALT: any reply stops THIS sequence (terminal status removes it from the executor's work set).
     const enr = await db.from('enrollments').update({ status: 'replied' }).eq('id', t.enrollmentId);
     if (enr.error) throw enr.error;
-    // H1 — a reply suppresses the PERSON globally: they engaged, so the machine stops contacting
-    // them across ALL campaigns (the suppression gates block re-enrollment elsewhere). Decision
-    // locked; "interested"-reply routing to a human is a later refinement.
-    await suppress(db, t.org, t.recipient, 'reply');
-
-    // 3.1 — reply autonomy DECISION POINT + audit, in SHADOW only. Gated on autonomy_enabled; the
-    // computed action is RECORDED, never routed (the unconditional suppress + needs_action above is
-    // the live behavior). Acting on it — engage/draft, snooze — is Slice 3.3. Best-effort: a failed
-    // audit must never break reply handling (the safety effects already happened).
-    try {
-      const mode = await getAutonomyMode(db, t.org);
-      if (mode.autonomyEnabled) {
-        const action = decideReplyAction(category, replyBody, mode); // isExplicitStop applied inside
+    // Global suppression is now CONDITIONAL: genuine stop signals (and off-mode, where every reply
+    // suppresses — Phase-2 H1) add the person to the suppression list; engage/escalate/snooze in a
+    // relaxed org do NOT (the conversation continues / a human handles it).
+    if (route.suppress) await suppress(db, t.org, t.recipient, 'reply');
+    // Audit the autonomous decision (best-effort — observability; the routing above is the behavior).
+    if (mode.autonomyEnabled) {
+      try {
         await recordAutonomyEvent(db, {
           organizationId: t.org,
           kind: 'reply',
@@ -181,12 +185,12 @@ export async function applySmartleadEvent(
           reason: category,
           confidence: null,
         });
+      } catch (err) {
+        console.error('[inbound] reply autonomy audit failed', {
+          enrollmentId: t.enrollmentId,
+          err,
+        });
       }
-    } catch (err) {
-      console.error('[inbound] reply autonomy shadow audit failed', {
-        enrollmentId: t.enrollmentId,
-        err,
-      });
     }
     return { handled: true };
   }

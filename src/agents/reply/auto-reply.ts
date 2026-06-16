@@ -54,3 +54,29 @@ export function decideReplyAction(
       return 'escalate'; // 'other' / ambiguous → a human decides
   }
 }
+
+export interface ReplyRoute {
+  /** Add the person to the suppression list (stop cold contact across campaigns). */
+  suppress: boolean;
+  /** needs_action = a human must act; auto_handled = the machine resolved it (no human needed). */
+  threadStatus: 'needs_action' | 'auto_handled';
+}
+
+/**
+ * Map a reply decision to its concrete effects (Slice 3.3). PURE. `relaxed` = autonomy on AND
+ * auto_reply_mode is not 'off' — only then do the per-category branches apply. When NOT relaxed,
+ * decideReplyAction returns 'suppress' for everything, and this maps it to Phase-2's exact behavior
+ * (suppress + needs_action). In relaxed mode, only genuine stop signals suppress; engage/escalate
+ * route to a human (needs_action), snooze is machine-handled (auto_handled, no suppress).
+ */
+export function routeReply(action: ReplyAction, relaxed: boolean): ReplyRoute {
+  switch (action) {
+    case 'engage':
+    case 'escalate':
+      return { suppress: false, threadStatus: 'needs_action' };
+    case 'snooze':
+      return { suppress: false, threadStatus: 'auto_handled' };
+    default: // 'suppress'
+      return { suppress: true, threadStatus: relaxed ? 'auto_handled' : 'needs_action' };
+  }
+}

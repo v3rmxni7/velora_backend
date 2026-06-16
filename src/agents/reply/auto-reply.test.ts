@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AutonomyMode } from '../../lib/autonomy-mode.js';
-import { decideReplyAction, isExplicitStop } from './auto-reply.js';
+import { decideReplyAction, isExplicitStop, routeReply } from './auto-reply.js';
 import { REPLY_CATEGORIES } from './classify.js';
 
 const mode = (over: Partial<AutonomyMode> = {}): AutonomyMode => ({
@@ -88,5 +88,21 @@ describe('decideReplyAction', () => {
     it('other / ambiguous → escalate to a human', () => {
       expect(decideReplyAction('other', 'who is this?', RELAXED)).toBe('escalate');
     });
+  });
+});
+
+describe('routeReply (decision → concrete effects)', () => {
+  it('engage / escalate → no suppress, needs_action (a human acts)', () => {
+    expect(routeReply('engage', true)).toEqual({ suppress: false, threadStatus: 'needs_action' });
+    expect(routeReply('escalate', true)).toEqual({ suppress: false, threadStatus: 'needs_action' });
+  });
+  it('snooze → no suppress, auto_handled (machine deferred)', () => {
+    expect(routeReply('snooze', true)).toEqual({ suppress: false, threadStatus: 'auto_handled' });
+  });
+  it('suppress in relaxed mode → suppress + auto_handled (machine stopped)', () => {
+    expect(routeReply('suppress', true)).toEqual({ suppress: true, threadStatus: 'auto_handled' });
+  });
+  it('suppress in off-mode → suppress + needs_action (EXACTLY Phase-2)', () => {
+    expect(routeReply('suppress', false)).toEqual({ suppress: true, threadStatus: 'needs_action' });
   });
 });
