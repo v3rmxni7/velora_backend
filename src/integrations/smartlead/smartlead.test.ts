@@ -1,11 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import { AppError } from '../../lib/errors.js';
+import { SANDBOX_ACCOUNT_ID } from './sandbox.js';
 import { createSmartleadClient, normalizeAccountsResponse } from './smartlead.js';
 
 describe('createSmartleadClient', () => {
-  it('throws 503 when SMARTLEAD_API_KEY is not configured (offline default)', () => {
-    // No key in the test env → the factory must refuse to build a client.
-    expect(() => createSmartleadClient()).toThrow(AppError);
+  it('returns the sandbox client when SMARTLEAD_API_KEY is not configured (dev/demo default)', async () => {
+    // No key in the test env → the factory yields the read-only sandbox simulator, not a throw.
+    const client = createSmartleadClient();
+    const accounts = await client.listEmailAccounts();
+    expect(accounts).toHaveLength(1);
+    expect(accounts[0]?.id).toBe(SANDBOX_ACCOUNT_ID);
+  });
+
+  it('sandbox refuses real sends (so a no-key client can never fake a send)', async () => {
+    const client = createSmartleadClient();
+    await expect(client.addLead('c1', { email: 'x@y.example', custom_fields: {} })).rejects.toThrow(
+      AppError,
+    );
   });
 });
 

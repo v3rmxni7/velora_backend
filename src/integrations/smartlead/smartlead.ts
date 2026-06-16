@@ -1,5 +1,6 @@
 import { env } from '../../config/env.js';
 import { AppError } from '../../lib/errors.js';
+import { createSandboxSmartleadClient } from './sandbox.js';
 import type {
   SmartleadClient,
   SmartleadEmailAccount,
@@ -19,10 +20,10 @@ export function normalizeAccountsResponse(body: unknown): SmartleadEmailAccount[
 // (2.1) + write methods (2.5). Injectable — tests pass a fake.
 export function createSmartleadClient(): SmartleadClient {
   if (!env.SMARTLEAD_API_KEY) {
-    throw new AppError('SMARTLEAD_API_KEY is not configured', {
-      code: 'smartlead_unconfigured',
-      statusCode: 503,
-    });
+    // Dev/demo with no key: a clearly-labeled sandbox client that simulates the READ surfaces
+    // (mailbox sync + warmth) and refuses every real send/provision. A real key falls through to
+    // the real client below, making the sandbox unreachable — it never touches the go-live flow.
+    return createSandboxSmartleadClient();
   }
   const apiKey = env.SMARTLEAD_API_KEY;
   const base = env.SMARTLEAD_API_URL.replace(/\/+$/, '');
