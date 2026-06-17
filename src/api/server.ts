@@ -5,6 +5,7 @@ import { ZodError } from 'zod';
 import { env } from '../config/env.js';
 import { AppError } from '../lib/errors.js';
 import { functions, inngest } from '../workers/inngest/index.js';
+import { analyticsRoute } from './routes/analytics.js';
 import { autonomyRoute } from './routes/autonomy.js';
 import { campaignsRoute } from './routes/campaigns.js';
 import { coachingPointsRoute } from './routes/coaching-points.js';
@@ -62,6 +63,7 @@ async function start(): Promise<void> {
   await app.register(inboxRoute);
   await app.register(deliverabilityRoute);
   await app.register(creditsRoute);
+  await app.register(analyticsRoute);
   await app.register(autonomyRoute);
   // Encapsulated so its raw-body parser stays scoped to the webhook route only.
   await app.register(webhooksRoute);
