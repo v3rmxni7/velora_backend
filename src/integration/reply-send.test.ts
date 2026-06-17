@@ -167,6 +167,15 @@ describe.skipIf(!ready)(
       if (r.error) throw r.error;
       return r.data ?? [];
     }
+    async function replyDebits(taskId: string) {
+      const r = await admin
+        .from('credit_ledger')
+        .select('delta, reason')
+        .eq('organization_id', orgId)
+        .eq('idempotency_key', `reply_send:${orgId}:${taskId}`);
+      if (r.error) throw r.error;
+      return r.data ?? [];
+    }
     async function autoSendAudits(taskId: string) {
       const r = await admin
         .from('autonomy_events')
@@ -314,6 +323,45 @@ describe.skipIf(!ready)(
       // Idempotent: a second call writes no second reply message (claim-before-push on reply_send key).
       await executeReplySend(admin, taskId, fake);
       expect((await replyMessages(threadId)).length).toBe(1);
+    }, 90_000);
+
+    it('4.1c — LIVE reply-send debits exactly one reply credit (idempotent); dry-run debits none', async () => {
+      await setMode(true, 'send');
+
+      // Dry-run debits nothing.
+      await setSending(false, true);
+      const dry = await seedReplyTask({
+        draftMode: 'personalized',
+        confidence: 0.95,
+        verified: true,
+        approved: true,
+      });
+      await executeReplySend(admin, dry.taskId, fake);
+      expect((await replyDebits(dry.taskId)).length).toBe(0);
+
+      // LIVE (flags flipped FOR THE TEST ORG ONLY; fake client → ZERO real email).
+      await setSending(true, false);
+      const live = await seedReplyTask({
+        draftMode: 'personalized',
+        confidence: 0.95,
+        verified: true,
+        approved: true,
+      });
+      const before = replyCalls.length;
+      const r1 = await executeReplySend(admin, live.taskId, fake);
+      expect(r1.outcome).toBe('queued');
+      expect(replyCalls.length).toBe(before + 1); // the (fake) push happened — no real email
+      const debits = await replyDebits(live.taskId);
+      expect(debits.length).toBe(1);
+      expect(debits[0]?.reason).toBe('reply');
+      expect(Number(debits[0]?.delta)).toBe(-1);
+
+      // Idempotent: a retry returns duplicate (C1 pre-check) → no second debit.
+      const r2 = await executeReplySend(admin, live.taskId, fake);
+      expect(r2.outcome).toBe('duplicate');
+      expect((await replyDebits(live.taskId)).length).toBe(1);
+
+      await setSending(false, true);
     }, 90_000);
   },
 );

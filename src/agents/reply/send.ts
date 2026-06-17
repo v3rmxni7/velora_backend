@@ -1,9 +1,10 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { getSupabaseAdmin } from '../../db/client.js';
 import { createSmartleadClient } from '../../integrations/smartlead/smartlead.js';
 import type { SmartleadClient } from '../../integrations/smartlead/types.js';
 import { getAutonomyMode, recordAutonomyEvent } from '../../lib/autonomy-mode.js';
 import { getSendingMode } from '../../lib/sending-mode.js';
-import { isCampaignActive, isSuppressed } from '../sending/pipeline.js';
+import { isCampaignActive, isSuppressed, SEND_COST } from '../sending/pipeline.js';
 import { decideReplyAutoSend } from './auto-reply.js';
 
 // Phase 3 Slice 3.4 — the REPLY send chokepoint. Mirrors executeSend's gate discipline for the most
@@ -169,6 +170,23 @@ export async function executeReplySend(
         .update({ status: 'failed' })
         .eq('id', messageId ?? '');
       throw err;
+    }
+
+    // 4.1c — meter the reply: debit one 'reply' credit (service-role; clients can't write the
+    // ledger). idempotency_key = the reply dedupe key → exactly one debit per reply, retry-safe
+    // (23505 = no-op). Debit-ONLY: no balance enforcement, no volume cap — a reply is a reactive
+    // response to an engaged prospect, so we record the cost but never block or throttle it. Runs
+    // only here in the LIVE branch AFTER a successful push (best-effort; never fails a sent reply).
+    const admin = getSupabaseAdmin();
+    if (admin) {
+      const debit = await admin.from('credit_ledger').insert({
+        organization_id: org,
+        delta: -SEND_COST,
+        reason: 'reply',
+        reference: { type: 'message', id: messageId ?? null },
+        idempotency_key: dedupeKey,
+      });
+      if (debit.error && debit.error.code !== '23505') throw debit.error;
     }
     return { outcome: 'queued', messageId };
   }
