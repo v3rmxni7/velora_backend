@@ -51,6 +51,7 @@ describe('isHandledEvent (2.6 — recognized vs ignored)', () => {
       'EMAIL_REPLY',
       'EMAIL_BOUNCE',
       'LEAD_UNSUBSCRIBED',
+      'EMAIL_COMPLAINT', // 4.1b — spam complaint
     ]) {
       expect(isHandledEvent(e)).toBe(true);
     }

@@ -2,6 +2,7 @@ import { createHmac } from 'node:crypto';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import Fastify from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { assessHealth, computeOrgHealth } from '../agents/sending/anomaly.js';
 import { applySmartleadEvent } from '../agents/sending/inbound.js';
 import { prepareEnrollment } from '../agents/sending/pipeline.js';
 import { webhooksRoute } from '../api/routes/webhooks.js';
@@ -29,6 +30,7 @@ describe.skipIf(!ready)(
     const replyEmail = `reply+${stamp}@example.com`;
     const bounceEmail = `bounce+${stamp}@example.com`;
     const unsubEmail = `unsub+${stamp}@example.com`;
+    const complaintEmail = `complaint+${stamp}@example.com`;
 
     let orgA = '';
     let orgB = '';
@@ -135,6 +137,7 @@ describe.skipIf(!ready)(
       enr[replyEmail] = await makeSent(orgA, campaignA, replyEmail, `r:${stamp}`);
       enr[bounceEmail] = await makeSent(orgA, campaignA, bounceEmail, `b:${stamp}`);
       enr[unsubEmail] = await makeSent(orgA, campaignA, unsubEmail, `u:${stamp}`);
+      enr[complaintEmail] = await makeSent(orgA, campaignA, complaintEmail, `c:${stamp}`);
       // Cross-tenant trap: org B has an enrollment with the SAME email as org A's reply lead.
       enr[`B:${replyEmail}`] = await makeSent(orgB, campaignB, replyEmail, `rb:${stamp}`);
     }, 180_000);
@@ -222,6 +225,61 @@ describe.skipIf(!ready)(
       expect(sup.data?.[0]?.reason).toBe('unsubscribe');
       const thr = await admin.from('threads').select('status').eq('id', e.data?.thread_id).single();
       expect(thr.data?.status).toBe('handled');
+    }, 60_000);
+
+    it('EMAIL_COMPLAINT → message complained + suppression(complaint) + enrollment terminal + thread handled; idempotent; arms the breaker', async () => {
+      const event = {
+        event_type: 'EMAIL_COMPLAINT',
+        campaign_id: slCampaignId,
+        to_email: complaintEmail,
+        message_id: 'c1',
+      };
+      const res = await applySmartleadEvent(admin, event);
+      expect(res.handled).toBe(true);
+
+      const m = await admin
+        .from('messages')
+        .select('status')
+        .eq('enrollment_id', enr[complaintEmail])
+        .eq('direction', 'outbound')
+        .single();
+      expect(m.data?.status).toBe('complained'); // the value the 3.5 breaker counts
+      const e = await admin
+        .from('enrollments')
+        .select('status, thread_id')
+        .eq('id', enr[complaintEmail])
+        .single();
+      expect(e.data?.status).toBe('unsubscribed'); // hard opt-out terminal (halts the sequence)
+      const sup = await admin
+        .from('suppression_list')
+        .select('reason')
+        .eq('organization_id', orgA)
+        .eq('email', complaintEmail);
+      expect(sup.data?.[0]?.reason).toBe('complaint');
+      const thr = await admin.from('threads').select('status').eq('id', e.data?.thread_id).single();
+      expect(thr.data?.status).toBe('handled');
+
+      // Idempotent: replaying the same complaint webhook is a no-op (still one complained message).
+      await applySmartleadEvent(admin, event);
+      const again = await admin
+        .from('messages')
+        .select('id')
+        .eq('enrollment_id', enr[complaintEmail])
+        .eq('status', 'complained');
+      expect((again.data ?? []).length).toBe(1);
+
+      // The breaker is finally ARMED: orgA now has a complaint, so assessHealth breaches (any
+      // complaint over max=0). Before 4.1b no inbound event could ever set this — the breaker was dead.
+      const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+      const metrics = await computeOrgHealth(admin, orgA, since);
+      expect(metrics.complaints).toBeGreaterThanOrEqual(1);
+      const verdict = assessHealth(metrics, {
+        maxBounceRate: 0.05,
+        minSends: 20,
+        maxComplaints: 0,
+      });
+      expect(verdict.breach).toBe(true);
+      expect(verdict.reason).toContain('complaints');
     }, 60_000);
 
     it('unknown campaign id → handled:false (not ours)', async () => {

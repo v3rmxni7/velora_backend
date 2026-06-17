@@ -1,6 +1,10 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { getAutonomyMode, recordAutonomyEvent } from '../../lib/autonomy-mode.js';
-import { eventToUpdate, type SmartleadEvent } from '../../lib/smartlead-webhook.js';
+import {
+  COMPLAINT_EVENTS,
+  eventToUpdate,
+  type SmartleadEvent,
+} from '../../lib/smartlead-webhook.js';
 import { events, inngest } from '../../workers/inngest/client.js';
 import { decideReplyAction, routeReply } from '../reply/auto-reply.js';
 import { classifyReply, type ReplyCategory } from '../reply/classify.js';
@@ -93,7 +97,7 @@ async function suppress(
   db: SupabaseClient,
   org: string,
   email: string,
-  reason: 'bounce' | 'unsubscribe' | 'reply',
+  reason: 'bounce' | 'unsubscribe' | 'reply' | 'complaint',
 ): Promise<void> {
   const { error } = await db
     .from('suppression_list')
@@ -266,6 +270,34 @@ export async function applySmartleadEvent(
       .eq('id', t.enrollmentId);
     if (enr.error) throw enr.error;
     await suppress(db, t.org, t.recipient, 'unsubscribe');
+    if (t.threadId) {
+      const thr = await db.from('threads').update({ status: 'handled' }).eq('id', t.threadId);
+      if (thr.error) throw thr.error;
+    }
+    return { handled: true };
+  }
+
+  // 4.1b — a spam complaint: the strongest negative signal. Mark the outbound message 'complained'
+  // (the value the 3.5 anomaly circuit-breaker counts → any complaint breaches), suppress the person
+  // (reason 'complaint'), halt the enrollment (terminal, reusing the 'unsubscribed' hard-opt-out
+  // status — there is no 'complained' enrollment status), and mark the thread handled. Idempotent:
+  // every write is a status set / suppression upsert, so a replayed webhook is a no-op.
+  if (COMPLAINT_EVENTS.has(type ?? '')) {
+    const t = await resolveTarget(db, event);
+    if (!t) return { handled: false };
+    const m = await db
+      .from('messages')
+      .update({ status: 'complained' })
+      .eq('organization_id', t.org)
+      .eq('enrollment_id', t.enrollmentId)
+      .eq('direction', 'outbound');
+    if (m.error) throw m.error;
+    const enr = await db
+      .from('enrollments')
+      .update({ status: 'unsubscribed' })
+      .eq('id', t.enrollmentId);
+    if (enr.error) throw enr.error;
+    await suppress(db, t.org, t.recipient, 'complaint');
     if (t.threadId) {
       const thr = await db.from('threads').update({ status: 'handled' }).eq('id', t.threadId);
       if (thr.error) throw thr.error;

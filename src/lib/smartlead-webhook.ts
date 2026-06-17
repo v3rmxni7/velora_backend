@@ -29,8 +29,21 @@ export interface SmartleadEvent {
   [k: string]: unknown;
 }
 
-/** Inbound (2.6) events that `applySmartleadEvent` handles with richer effects than a status flip. */
-const INBOUND_EVENTS = new Set(['EMAIL_REPLY', 'EMAIL_BOUNCE', 'LEAD_UNSUBSCRIBED']);
+/**
+ * Spam-complaint events (Slice 4.1b). The exact Smartlead event name is confirmed at go-live (same
+ * verified-at-go-live note as sendReply); we recognize the likely variants. Centralized here so a
+ * go-live confirmation is a one-line change. A complaint → message 'complained' + suppression,
+ * which is what arms the 3.5 anomaly circuit-breaker.
+ */
+export const COMPLAINT_EVENTS = new Set(['EMAIL_COMPLAINT', 'SPAM_COMPLAINT', 'SPAM_REPORT']);
+
+/** Inbound (2.6+) events that `applySmartleadEvent` handles with richer effects than a status flip. */
+const INBOUND_EVENTS = new Set([
+  'EMAIL_REPLY',
+  'EMAIL_BOUNCE',
+  'LEAD_UNSUBSCRIBED',
+  ...COMPLAINT_EVENTS,
+]);
 
 /** True if we recognize the event at all (status events via eventToUpdate, or an inbound 2.6 event). */
 export function isHandledEvent(eventType: string | undefined): boolean {
