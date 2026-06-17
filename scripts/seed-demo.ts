@@ -1,6 +1,16 @@
 import 'dotenv/config';
 import { createClient } from '@supabase/supabase-js';
+import type { LeadType } from '../src/agents/draft/generate.js';
+import { launchCampaign } from '../src/agents/sending/enroll.js';
+import { refreshMailboxWarmup, syncMailboxes } from '../src/agents/sending/mailbox-sync.js';
+import { type EnrollmentRecord, prepareEnrollment } from '../src/agents/sending/pipeline.js';
 import { env } from '../src/config/env.js';
+import { createSmartleadClient } from '../src/integrations/smartlead/smartlead.js';
+
+/** Slug a company name into a reserved, non-deliverable .example domain (RFC 2606). */
+function demoDomain(company: string): string {
+  return `${company.toLowerCase().replace(/[^a-z0-9]+/g, '')}.example`;
+}
 
 // Demo-account seeder (service-role) — provisions the account the frontend logs in as:
 // one org + one auth user + a small KB + ~5 leads. Idempotent: safe to re-run (no duplicate
@@ -75,9 +85,13 @@ async function main(): Promise<void> {
     if (ins.error) throw ins.error;
   }
 
-  // Demo reset: clear the org's task queue and any sparse verification leads so every
-  // re-run yields a clean demo (drafts get generated live, under the current gate).
+  // Demo reset: clear the org's pipeline state so every re-run yields a clean, freshly-driven demo
+  // (drafts regenerate live under the current gate). FK-safe order: messages → enrollments → tasks
+  // → threads. All scoped to the demo org; nothing real is sent (this is dry-run-only demo data).
+  await admin.from('messages').delete().eq('organization_id', orgId);
+  await admin.from('enrollments').delete().eq('organization_id', orgId);
   await admin.from('tasks').delete().eq('organization_id', orgId);
+  await admin.from('threads').delete().eq('organization_id', orgId);
   await admin
     .from('people')
     .delete()
@@ -181,6 +195,9 @@ async function main(): Promise<void> {
     first_name: p.first,
     last_name: p.last,
     full_name: p.full,
+    // Demo email on a reserved, non-deliverable .example domain (RFC 2606): unmistakably demo, and
+    // safe — even a hypothetical go-live fail-closes on these (verification can't pass them).
+    email: `${p.first}.${p.last}@${demoDomain(p.company)}`.toLowerCase(),
     title: p.title,
     seniority: p.sen,
     department: p.dept,
@@ -191,8 +208,149 @@ async function main(): Promise<void> {
   }));
   const up = await admin
     .from('people')
-    .upsert(rows, { onConflict: 'organization_id,provider,external_id' });
+    .upsert(rows, { onConflict: 'organization_id,provider,external_id' })
+    .select('id, external_id');
   if (up.error) throw up.error;
+  const peopleIds = (up.data ?? []).map((r) => r.id as string);
+
+  // ---- Sending surface: a labeled sandbox mailbox, warmed via the REAL classifyWarmth path ----
+  // With no SMARTLEAD_API_KEY, createSmartleadClient() returns the sandbox simulator (Slice 4.0a):
+  // sync creates an unmistakably-demo mailbox, the warmup refresh promotes it to 'warm' through the
+  // real warmth logic. Nothing here touches a real provider. (With a real key, this syncs real
+  // accounts — the genuine go-live behavior.)
+  const senderName = 'Ava (demo)';
+  const existingSender = await admin
+    .from('senders')
+    .select('id')
+    .eq('organization_id', orgId)
+    .eq('display_name', senderName)
+    .maybeSingle();
+  if (existingSender.error) throw existingSender.error;
+  let senderId = existingSender.data?.id as string | undefined;
+  if (!senderId) {
+    const s = await admin
+      .from('senders')
+      .insert({
+        organization_id: orgId,
+        user_id: userId,
+        display_name: senderName,
+        status: 'active',
+      })
+      .select('id')
+      .single();
+    if (s.error) throw s.error;
+    senderId = s.data.id as string;
+  }
+
+  const client = createSmartleadClient();
+  const sync = await syncMailboxes(admin, orgId, client);
+  for (const mailboxId of sync.mailboxIds) {
+    await refreshMailboxWarmup(admin, client, mailboxId);
+  }
+  // Link the synced mailbox(es) to the demo sender + mark primary (best-effort; for the Team view).
+  if (sync.mailboxIds.length > 0) {
+    await admin
+      .from('mailboxes')
+      .update({ sender_id: senderId, is_primary: true })
+      .eq('organization_id', orgId);
+  }
+
+  // ---- List + cold-outbound campaign from the demo leads ----
+  const listName = 'Demo — Engineering leaders';
+  const existingList = await admin
+    .from('lists')
+    .select('id')
+    .eq('organization_id', orgId)
+    .eq('name', listName)
+    .maybeSingle();
+  if (existingList.error) throw existingList.error;
+  let listId = existingList.data?.id as string | undefined;
+  if (!listId) {
+    const l = await admin
+      .from('lists')
+      .insert({ organization_id: orgId, name: listName, entity_type: 'person' })
+      .select('id')
+      .single();
+    if (l.error) throw l.error;
+    listId = l.data.id as string;
+  }
+  if (peopleIds.length > 0) {
+    const members = peopleIds.map((id) => ({
+      organization_id: orgId,
+      list_id: listId,
+      entity_type: 'person',
+      entity_id: id,
+    }));
+    const lm = await admin
+      .from('list_members')
+      .upsert(members, { onConflict: 'list_id,entity_type,entity_id', ignoreDuplicates: true });
+    if (lm.error) throw lm.error;
+  }
+
+  const campaignName = 'Demo — Cold outbound';
+  const existingCampaign = await admin
+    .from('campaigns')
+    .select('id')
+    .eq('organization_id', orgId)
+    .eq('name', campaignName)
+    .maybeSingle();
+  if (existingCampaign.error) throw existingCampaign.error;
+  let campaignId = existingCampaign.data?.id as string | undefined;
+  if (!campaignId) {
+    const c = await admin
+      .from('campaigns')
+      .insert({
+        organization_id: orgId,
+        sender_id: senderId,
+        name: campaignName,
+        campaign_type: 'cold_outbound',
+        list_id: listId,
+        status: 'draft',
+      })
+      .select('id')
+      .single();
+    if (c.error) throw c.error;
+    campaignId = c.data.id as string;
+    const step = await admin.from('campaign_steps').insert({
+      organization_id: orgId,
+      campaign_id: campaignId,
+      step_number: 1,
+      channel: 'email',
+      delay_days: 0,
+      body_mode: 'ai_grounded',
+    });
+    if (step.error) throw step.error;
+  }
+
+  // ---- Drive launch → enroll → (if an LLM is configured) grounded dry-run drafts in Engage ----
+  // launchCampaign enrolls the list as 'pending' + flips the campaign active. Drafting needs an LLM
+  // provider (complete() has no live stub); guarded so the seed degrades honestly without one. The
+  // verifier is passed as null so the demo's .example emails skip verification (they are demo data,
+  // never really sent). prepareEnrollment → 'awaiting_approval' drafts; sending stays DRY-RUN.
+  await launchCampaign(admin, { id: campaignId, organization_id: orgId, list_id: listId });
+  const hasLlm = !!(env.ANTHROPIC_API_KEY || env.DEEPSEEK_API_KEY);
+  let drafted = 0;
+  if (hasLlm) {
+    const pend = await admin
+      .from('enrollments')
+      .select('id, organization_id, campaign_id, lead_type, lead_id, status, current_step, task_id')
+      .eq('campaign_id', campaignId)
+      .eq('status', 'pending');
+    if (pend.error) throw pend.error;
+    for (const e of pend.data ?? []) {
+      try {
+        const res = await prepareEnrollment(
+          admin,
+          e as EnrollmentRecord & { lead_type: LeadType },
+          {},
+          null, // skip verification for demo .example leads (never really sent)
+        );
+        if (res.outcome === 'prepared') drafted += 1;
+      } catch (err) {
+        console.error('[seed-demo] draft generation failed for enrollment', e.id, err);
+      }
+    }
+  }
 
   // Verify the credentials actually work.
   const signin = await anon.auth.signInWithPassword({ email: EMAIL, password: PASSWORD });
@@ -207,7 +365,17 @@ async function main(): Promise<void> {
   console.log(`  email:       ${EMAIL}`);
   console.log(`  password:    ${PASSWORD}`);
   console.log(`  org id:      ${orgId}`);
-  console.log(`  leads:       ${rows.length} people · KB: 2 coaching + 2 proof · task queue reset`);
+  console.log(`  leads:       ${rows.length} people · KB: 2 coaching + 2 proof`);
+  console.log(
+    `  mailbox:     ${sync.synced} sandbox mailbox (warmed via the real path; demo affordance, not a real account)`,
+  );
+  console.log(`  campaign:    "${campaignName}" (cold_outbound, dry-run) over "${listName}"`);
+  console.log(
+    hasLlm
+      ? `  drafts:      ${drafted} grounded dry-run drafts in Engage (awaiting approval)`
+      : '  drafts:      none yet — set ANTHROPIC_API_KEY/DEEPSEEK_API_KEY, then drafts generate on the next executor run',
+  );
+  console.log('  sending:     OFF · dry-run (no real email; flip is a deliberate runbook act)');
   console.log('  → log in to the frontend with the email + password above.');
   console.log('========================================\n');
 }
