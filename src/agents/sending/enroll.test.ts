@@ -3,13 +3,19 @@ import { AppError } from '../../lib/errors.js';
 import { assertSupportedCampaignType, mapMembersToEnrollments } from './enroll.js';
 
 describe('assertSupportedCampaignType', () => {
-  it('allows cold_outbound', () => {
-    expect(() => assertSupportedCampaignType('cold_outbound')).not.toThrow();
-  });
-  it('rejects the not-yet-supported types (422)', () => {
-    for (const t of ['warm_outbound', 'cross_sell', 'website_visitor', 'intent_signals', 'bogus']) {
-      expect(() => assertSupportedCampaignType(t)).toThrow(AppError);
+  it('allows all 5 product types (4.3 — audience resolution is the real gate, not the type)', () => {
+    for (const t of [
+      'cold_outbound',
+      'warm_outbound',
+      'cross_sell',
+      'website_visitor',
+      'intent_signals',
+    ]) {
+      expect(() => assertSupportedCampaignType(t)).not.toThrow();
     }
+  });
+  it('still rejects a bogus type (422)', () => {
+    expect(() => assertSupportedCampaignType('bogus')).toThrow(AppError);
   });
 });
 

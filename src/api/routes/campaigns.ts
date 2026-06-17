@@ -15,6 +15,12 @@ const CreateCampaign = z.object({
   campaignType: z.enum(ALL_CAMPAIGN_TYPES).default('cold_outbound'),
 });
 const IdParam = z.object({ id: z.uuid() });
+const StepInput = z.object({
+  delayDays: z.coerce.number().int().min(0).max(365),
+  bodyMode: z.enum(['ai_grounded', 'template']),
+  subjectTemplate: z.string().max(300).nullish(),
+});
+const PutSteps = z.object({ steps: z.array(StepInput).min(1).max(20) });
 const EnrollmentQuery = z.object({
   status: z
     .enum([
@@ -109,28 +115,71 @@ export const campaignsRoute: FastifyPluginAsync = async (app) => {
     if (c.error) throw c.error;
     if (!c.data) return reply.code(404).send({ error: 'not_found' });
     assertSupportedCampaignType(c.data.campaign_type as string);
-    if (!c.data.list_id) {
+    // Cold needs a list; non-cold types resolve their audience elsewhere (or honestly report
+    // source-not-connected via launchCampaign) — so the no-list guard is cold-only.
+    if (c.data.campaign_type === 'cold_outbound' && !c.data.list_id) {
       return reply.code(400).send({ error: 'no_audience', message: 'Campaign has no list' });
     }
     const result = await launchCampaign(db, {
       id: c.data.id as string,
       organization_id: c.data.organization_id as string,
-      list_id: c.data.list_id as string,
+      list_id: c.data.list_id as string | null,
+      campaign_type: c.data.campaign_type as string,
     });
-    // Best-effort: kick the executor to prepare the freshly-enrolled leads (gates → draft → task).
-    try {
-      await inngest.send({
-        name: events.campaignExecute.name,
-        data: {
-          organizationId: c.data.organization_id as string,
-          campaignId: c.data.id as string,
-          dedupeKey: `campaign:${c.data.id}:launch`,
-        },
-      });
-    } catch (err) {
-      request.log.warn({ err, campaignId: id }, 'campaign/execute enqueue failed (non-fatal)');
+    // Only kick the executor when an audience was actually enrolled (a non-cold source-not-connected
+    // launch enrolled nothing and the campaign stayed draft — there is nothing to prepare).
+    if (result.sourceConnected) {
+      try {
+        await inngest.send({
+          name: events.campaignExecute.name,
+          data: {
+            organizationId: c.data.organization_id as string,
+            campaignId: c.data.id as string,
+            dedupeKey: `campaign:${c.data.id}:launch`,
+          },
+        });
+      } catch (err) {
+        request.log.warn({ err, campaignId: id }, 'campaign/execute enqueue failed (non-fatal)');
+      }
     }
     return { data: result };
+  });
+
+  // Author the sequence (4.3): REPLACE the whole ordered step list. The follow-up sequencer reads
+  // campaign_steps by step_number, which must be contiguous (1..N) — a replace guarantees that and
+  // makes reorder/add/delete atomic. Draft-only: editing a launched campaign's sequence is locked
+  // (an in-flight enrollment must not have its steps mutated underneath it).
+  app.put('/campaigns/:id/steps', async (request, reply) => {
+    const { db, organizationId } = requireAuth(request);
+    const { id } = IdParam.parse(request.params);
+    const body = PutSteps.parse(request.body);
+    const c = await db.from('campaigns').select('id, status').eq('id', id).maybeSingle();
+    if (c.error) throw c.error;
+    if (!c.data) return reply.code(404).send({ error: 'not_found' });
+    if (c.data.status !== 'draft') {
+      return reply.code(422).send({
+        error: 'sequence_locked',
+        message: 'The sequence can only be edited while the campaign is a draft.',
+      });
+    }
+    const del = await db.from('campaign_steps').delete().eq('campaign_id', id);
+    if (del.error) throw del.error;
+    const rows = body.steps.map((s, i) => ({
+      organization_id: organizationId,
+      campaign_id: id,
+      step_number: i + 1,
+      channel: 'email',
+      delay_days: s.delayDays,
+      body_mode: s.bodyMode,
+      subject_template: s.subjectTemplate ?? null,
+    }));
+    const ins = await db
+      .from('campaign_steps')
+      .insert(rows)
+      .select('*')
+      .order('step_number', { ascending: true });
+    if (ins.error) throw ins.error;
+    return { data: ins.data };
   });
 
   app.get('/campaigns/:id/enrollments', async (request) => {

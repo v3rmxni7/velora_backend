@@ -11,6 +11,24 @@ import { runWriter, type WriterInput, type WriterResult } from './writer.js';
 // MIN_FACTS / MIN_LEAD_FACTS live with the gate in verify.ts (decideDraftMode).
 const MIN_FACT_CONFIDENCE = 0.6;
 
+// Per-type coaching (4.3): steers the angle for non-cold campaign types. cold_outbound returns null
+// → NO extra coaching line → a cold draft is byte-identical to Phase-2 (preserves dedupe + tests).
+const CAMPAIGN_TYPE_COACHING: Record<string, string> = {
+  warm_outbound:
+    'This is a warm outbound campaign — the recipient is an existing contact from the customer’s CRM; reference the existing relationship rather than introducing the company from scratch.',
+  cross_sell:
+    'This is a cross-sell/upsell to an EXISTING customer; acknowledge they already use the product and focus on one relevant expansion, not a cold pitch.',
+  website_visitor:
+    'This recipient recently visited the customer’s website; reference that timely interest naturally as the reason for reaching out.',
+  intent_signals:
+    'This lead was surfaced by a timely intent signal (e.g. a funding round or a new senior hire); lead with that trigger as the reason for reaching out now.',
+};
+
+/** The coaching line for a campaign type, or null for cold/unknown (no extra steering). PURE. */
+export function campaignTypeCoaching(campaignType: string | null | undefined): string | null {
+  return CAMPAIGN_TYPE_COACHING[campaignType ?? ''] ?? null;
+}
+
 export type LeadType = 'person' | 'company' | 'local_business';
 const TABLE: Record<LeadType, string> = {
   person: 'people',
@@ -114,6 +132,16 @@ export async function generateDraft(
     coaching.push(
       'This is a brief follow-up to an earlier, unanswered email. Acknowledge the prior note in one short line, add a single fresh reason to reply, and keep it shorter than a first touch. Do NOT repeat the first email.',
     );
+  }
+  // 4.3 — type-appropriate angle. A single cheap lookup; cold/unknown → no line (byte-identical).
+  if (input.campaignId) {
+    const camp = await db
+      .from('campaigns')
+      .select('campaign_type')
+      .eq('id', input.campaignId)
+      .maybeSingle();
+    const line = campaignTypeCoaching(camp.data?.campaign_type as string | null | undefined);
+    if (line) coaching.push(line);
   }
   const proof = (piRes.data ?? []).map((r) => ({
     id: String(r.id),
