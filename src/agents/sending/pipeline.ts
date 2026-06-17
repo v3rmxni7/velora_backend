@@ -95,6 +95,20 @@ async function creditBalance(db: SupabaseClient, organizationId: string): Promis
   return (data ?? []).reduce((sum, r) => sum + Number(r.delta), 0);
 }
 
+/**
+ * 4.1a — a campaign is sendable only while its status is 'active'. A paused/completed/archived/draft
+ * campaign (or a missing one) blocks sends. Fail-safe: a missing campaign → false (never send).
+ */
+export async function isCampaignActive(db: SupabaseClient, campaignId: string): Promise<boolean> {
+  const { data, error } = await db
+    .from('campaigns')
+    .select('status')
+    .eq('id', campaignId)
+    .maybeSingle();
+  if (error) throw error;
+  return data?.status === 'active';
+}
+
 export type PrepareOutcome = 'prepared' | 'suppressed' | 'undeliverable' | 'no_email' | 'skipped';
 
 /** Phase 1: gate a pending enrollment, then generate the grounded draft + approval task. */
@@ -169,6 +183,7 @@ export type SendOutcome =
   | 'queued'
   | 'not_approved'
   | 'suppressed'
+  | 'campaign_paused'
   | 'insufficient_credit'
   | 'verification_required'
   | 'rate_limited'
@@ -314,6 +329,12 @@ export async function executeSend(
   if (recipient && (await isSuppressed(db, org, recipient))) {
     await db.from('enrollments').update({ status: 'unsubscribed' }).eq('id', enrollment.id);
     return { outcome: 'suppressed' };
+  }
+
+  // 4.1a — a paused (non-active) campaign blocks all sends. Defer: write nothing and leave the
+  // enrollment awaiting_approval so resuming the campaign picks it up (mirrors the rate-limit defer).
+  if (!(await isCampaignActive(db, enrollment.campaign_id))) {
+    return { outcome: 'campaign_paused' };
   }
 
   const mode = await getSendingMode(db, org);

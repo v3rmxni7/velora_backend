@@ -4,7 +4,12 @@ import { getAutonomyMode } from '../../lib/autonomy-mode.js';
 import type { GenerateDeps } from '../draft/generate.js';
 import { runDraftGeneration } from '../draft/task.js';
 import { runAutoApproval } from './auto-approve.js';
-import { type EnrollmentRecord, isSuppressed, type SendOutcome } from './pipeline.js';
+import {
+  type EnrollmentRecord,
+  isCampaignActive,
+  isSuppressed,
+  type SendOutcome,
+} from './pipeline.js';
 
 // Phase 3 Slice 3.2 — the durable multi-step follow-up sequencer's testable core. The Inngest
 // wrapper (campaign-followup.ts) only provides the durable delay (step.sleepUntil) around these
@@ -83,6 +88,11 @@ export async function runFollowupStep(
   // 1. Kill switch — turning autonomy off halts in-flight sequences (no advance, no send).
   const mode = await getAutonomyMode(db, org);
   if (!mode.autonomyEnabled) return { status: 'halted', reason: 'autonomy_disabled' };
+
+  // 1b. Campaign pause (4.1a) — a paused campaign halts in-flight follow-ups before any draft/send.
+  if (!(await isCampaignActive(db, enrollment.campaign_id))) {
+    return { status: 'halted', reason: 'campaign_paused' };
+  }
 
   // 2. Suppression re-check on the frozen verified address (saves LLM spend; executeSend re-checks too).
   if (enrollment.verified_email && (await isSuppressed(db, org, enrollment.verified_email))) {

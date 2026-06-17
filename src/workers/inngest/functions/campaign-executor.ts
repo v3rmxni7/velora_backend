@@ -1,7 +1,11 @@
 import type { LeadType } from '../../../agents/draft/generate.js';
 import { runAutoApproval } from '../../../agents/sending/auto-approve.js';
 import { nextFollowupDue } from '../../../agents/sending/followup.js';
-import { type EnrollmentRecord, prepareEnrollment } from '../../../agents/sending/pipeline.js';
+import {
+  type EnrollmentRecord,
+  isCampaignActive,
+  prepareEnrollment,
+} from '../../../agents/sending/pipeline.js';
 import { getSupabaseAdmin } from '../../../db/client.js';
 import { events, inngest } from '../client.js';
 
@@ -21,6 +25,10 @@ export const campaignExecutor = inngest.createFunction(
       const db = getSupabaseAdmin();
       if (!db) throw new Error('Supabase admin client not configured');
       const { organizationId, campaignId } = event.data;
+      // 4.1a — a paused (non-active) campaign prepares nothing (no drafts, no sends).
+      if (!(await isCampaignActive(db, campaignId))) {
+        return { organizationId, campaignId, prepared: 0, autoSentIds: [], total: 0 };
+      }
       const { data, error } = await db
         .from('enrollments')
         .select(
