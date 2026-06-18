@@ -31,6 +31,16 @@ export const LEDGER_REASONS = [
   'adjustment',
 ] as const;
 
+/** calls.outcome values (the outcome CHECK) — for a 0-filled byOutcome (4.9). */
+export const CALL_OUTCOMES = [
+  'connected',
+  'voicemail',
+  'no_answer',
+  'meeting_booked',
+  'bad_number',
+  'other',
+] as const;
+
 const round6 = (n: number) => Math.round(n * 1e6) / 1e6;
 
 export interface DateRange {
@@ -270,6 +280,51 @@ export interface CreditsAnalyticsData {
   used: number;
   byReason: Record<string, number>;
   series: { date: string; granted: number; used: number }[];
+}
+
+// ---- /analytics/dialer (Slice 4.9) — REAL counts off the calls table; honest-by-construction ----
+export interface CallAnalyticsRow {
+  created_at: string;
+  called_at: string | null;
+  outcome: string | null;
+}
+export interface DialerData {
+  range: RangeOut;
+  /** logged calls (outcome != null) in the window — the measurability switch (0 → FE keeps NotYet). */
+  loggedCalls: number;
+  byOutcome: Record<string, number>;
+  /** connected / ATTEMPTED (attempted = logged excluding bad_number). Omitted when attempted === 0. */
+  connectRate?: number;
+  series: { date: string; calls: number; connected: number }[];
+}
+
+export function buildDialer(range: DateRange, calls: CallAnalyticsRow[]): DialerData {
+  const days = eachUtcDay(range);
+  const logged = calls.filter((c) => c.outcome != null);
+  const byOutcome: Record<string, number> = Object.fromEntries(CALL_OUTCOMES.map((o) => [o, 0]));
+  for (const c of logged)
+    if (c.outcome && c.outcome in byOutcome) byOutcome[c.outcome] = (byOutcome[c.outcome] ?? 0) + 1;
+
+  const connected = byOutcome.connected ?? 0;
+  // Attempted = logged calls excluding bad_number (a junk number isn't a real dial attempt).
+  const attempted = logged.length - (byOutcome.bad_number ?? 0);
+
+  const idx = new Map(days.map((d) => [d, { date: d, calls: 0, connected: 0 }]));
+  for (const c of logged) {
+    const b = idx.get(dayKey(c.called_at ?? c.created_at));
+    if (!b) continue;
+    b.calls += 1;
+    if (c.outcome === 'connected') b.connected += 1;
+  }
+
+  const out: DialerData = {
+    range: rangeOut(range, days),
+    loggedCalls: logged.length,
+    byOutcome,
+    series: days.map((d) => idx.get(d) as { date: string; calls: number; connected: number }),
+  };
+  if (attempted > 0) out.connectRate = round6(connected / attempted); // omitted (not 0) when not measurable
+  return out;
 }
 
 export function buildCredits(range: DateRange, ledger: LedgerRow[]): CreditsAnalyticsData {

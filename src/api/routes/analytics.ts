@@ -2,8 +2,10 @@ import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import {
   buildCredits,
+  buildDialer,
   buildMessaging,
   buildOverview,
+  type CallAnalyticsRow,
   type LedgerRow,
   type MsgRow,
   resolveRange,
@@ -112,5 +114,21 @@ export const analyticsRoute: FastifyPluginAsync = async (app) => {
       reason: r.reason as string,
     }));
     return { data: buildCredits(range, ledger) };
+  });
+
+  // 4.9 — dialer counts off the calls table. Fetch logged calls in the window (called_at in range;
+  // unlogged calls have a null called_at → excluded). RLS scopes to the caller's org. Honest: the FE
+  // keeps the NotYet card while loggedCalls === 0, and flips to real stats once a call is logged.
+  app.get('/analytics/dialer', async (request) => {
+    const { db } = requireAuth(request);
+    const { from, to } = RangeQuery.parse(request.query);
+    const range = resolveRange(from, to, Date.now());
+    const calls = await db
+      .from('calls')
+      .select('created_at, called_at, outcome')
+      .gte('called_at', range.fromIso)
+      .lte('called_at', range.toIso);
+    if (calls.error) throw calls.error;
+    return { data: buildDialer(range, (calls.data ?? []) as CallAnalyticsRow[]) };
   });
 };

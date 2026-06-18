@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildCredits,
+  buildDialer,
   buildMessaging,
   buildOverview,
+  type CallAnalyticsRow,
   dayKey,
   eachUtcDay,
   type MsgRow,
@@ -11,6 +13,36 @@ import {
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = Date.parse('2026-06-16T12:00:00.000Z');
+
+describe('buildDialer', () => {
+  const range = resolveRange('2026-06-10T00:00:00.000Z', '2026-06-16T00:00:00.000Z', NOW);
+  it('honest-empty with no logged calls: loggedCalls 0, NO connectRate, byOutcome all-0', () => {
+    const d = buildDialer(range, []);
+    expect(d.loggedCalls).toBe(0);
+    expect(d.connectRate).toBeUndefined(); // omitted, never 0/0
+    expect(Object.values(d.byOutcome).every((n) => n === 0)).toBe(true);
+    expect(d.series.every((s) => s.calls === 0 && s.connected === 0)).toBe(true);
+  });
+  it('counts logged calls + connectRate over ATTEMPTED (excludes bad_number)', () => {
+    const at = '2026-06-12T09:00:00.000Z';
+    const rows: CallAnalyticsRow[] = [
+      { created_at: at, called_at: at, outcome: 'connected' },
+      { created_at: at, called_at: at, outcome: 'connected' },
+      { created_at: at, called_at: at, outcome: 'voicemail' },
+      { created_at: at, called_at: at, outcome: 'bad_number' }, // excluded from the rate denominator
+      { created_at: at, called_at: null, outcome: null }, // not logged → ignored
+    ];
+    const d = buildDialer(range, rows);
+    expect(d.loggedCalls).toBe(4);
+    expect(d.byOutcome.connected).toBe(2);
+    expect(d.byOutcome.bad_number).toBe(1);
+    // attempted = 4 logged − 1 bad_number = 3; connected 2 → 2/3
+    expect(d.connectRate).toBeCloseTo(2 / 3, 6);
+    const day = d.series.find((s) => s.date === '2026-06-12');
+    expect(day?.calls).toBe(4);
+    expect(day?.connected).toBe(2);
+  });
+});
 
 describe('resolveRange', () => {
   it('defaults to the last 30 days', () => {

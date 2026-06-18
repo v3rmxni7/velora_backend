@@ -12,6 +12,7 @@ import { coachingPointsRoute } from './routes/coaching-points.js';
 import { copilotRoute } from './routes/copilot.js';
 import { creditsRoute } from './routes/credits.js';
 import { deliverabilityRoute } from './routes/deliverability.js';
+import { dialerRoute } from './routes/dialer.js';
 import { findLeadsRoute } from './routes/find-leads.js';
 import { healthRoute } from './routes/health.js';
 import { icpProfilesRoute } from './routes/icp-profiles.js';
@@ -70,6 +71,7 @@ async function start(): Promise<void> {
   await app.register(websiteVisitorsRoute);
   await app.register(integrationsRoute);
   await app.register(teamRoute);
+  await app.register(dialerRoute);
   await app.register(inboxRoute);
   await app.register(deliverabilityRoute);
   await app.register(creditsRoute);
