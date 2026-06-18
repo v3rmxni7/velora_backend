@@ -27,6 +27,7 @@ import { sendersRoute } from './routes/senders.js';
 import { sendingRoute } from './routes/sending.js';
 import { signalsRoute } from './routes/signals.js';
 import { tasksRoute } from './routes/tasks.js';
+import { teamRoute } from './routes/team.js';
 import { webhooksRoute } from './routes/webhooks.js';
 import { websiteVisitorsRoute } from './routes/website-visitors.js';
 
@@ -68,6 +69,7 @@ async function start(): Promise<void> {
   await app.register(signalsRoute);
   await app.register(websiteVisitorsRoute);
   await app.register(integrationsRoute);
+  await app.register(teamRoute);
   await app.register(inboxRoute);
   await app.register(deliverabilityRoute);
   await app.register(creditsRoute);

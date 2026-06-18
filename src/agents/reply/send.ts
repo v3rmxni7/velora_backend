@@ -4,7 +4,7 @@ import { createSmartleadClient } from '../../integrations/smartlead/smartlead.js
 import type { SmartleadClient } from '../../integrations/smartlead/types.js';
 import { getAutonomyMode, recordAutonomyEvent } from '../../lib/autonomy-mode.js';
 import { getSendingMode } from '../../lib/sending-mode.js';
-import { isCampaignActive, isSuppressed, SEND_COST } from '../sending/pipeline.js';
+import { isCampaignActive, isSenderActive, isSuppressed, SEND_COST } from '../sending/pipeline.js';
 import { decideReplyAutoSend } from './auto-reply.js';
 
 // Phase 3 Slice 3.4 — the REPLY send chokepoint. Mirrors executeSend's gate discipline for the most
@@ -21,6 +21,7 @@ export type ReplySendOutcome =
   | 'not_approved'
   | 'suppressed'
   | 'campaign_paused'
+  | 'sender_paused'
   | 'invalid'
   | 'duplicate'
   | 'skipped'
@@ -84,6 +85,8 @@ export async function executeReplySend(
 
   // 4.1a — a paused campaign blocks reply sends too (pause stops all outbound for the campaign).
   if (!(await isCampaignActive(db, task.campaign_id))) return { outcome: 'campaign_paused' };
+  // 4.8 — a paused/setup assigned sender blocks reply sends too (pause stops ALL the sender's outbound).
+  if (!(await isSenderActive(db, task.campaign_id))) return { outcome: 'sender_paused' };
 
   const dedupeKey = `reply_send:${org}:${taskId}`;
   const claim = async (status: 'dry_run' | 'queued') => {

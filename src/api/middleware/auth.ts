@@ -3,12 +3,16 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { createUserClient, getSupabaseAnon } from '../../db/user-client.js';
 import { AppError } from '../../lib/errors.js';
 
+export type OrgRole = 'owner' | 'admin' | 'member';
+
 declare module 'fastify' {
   interface FastifyRequest {
     /** Authenticated Supabase user (set by `authenticate`). */
     user?: { id: string; email?: string };
     /** The caller's organization id, resolved via the user-scoped client. */
     organizationId?: string;
+    /** The caller's role within the org (4.8 — the first role gate). */
+    userRole?: OrgRole;
     /** User-scoped (RLS-enforcing) Supabase client for this request. */
     db?: SupabaseClient;
   }
@@ -41,7 +45,7 @@ export async function authenticate(request: FastifyRequest, reply: FastifyReply)
   // RLS policy, so a working result is also proof RLS is in force.
   const { data: profile, error: profileError } = await db
     .from('users')
-    .select('organization_id')
+    .select('organization_id, role')
     .eq('id', data.user.id)
     .single();
   if (profileError || !profile) {
@@ -50,6 +54,7 @@ export async function authenticate(request: FastifyRequest, reply: FastifyReply)
 
   request.user = { id: data.user.id, email: data.user.email ?? undefined };
   request.organizationId = profile.organization_id as string;
+  request.userRole = profile.role as OrgRole;
   request.db = db;
 }
 
@@ -61,9 +66,25 @@ export function requireAuth(request: FastifyRequest): {
   db: SupabaseClient;
   organizationId: string;
   userId: string;
+  role: OrgRole;
 } {
-  if (!request.db || !request.organizationId || !request.user) {
+  if (!request.db || !request.organizationId || !request.user || !request.userRole) {
     throw new AppError('Not authenticated', { code: 'unauthorized', statusCode: 401 });
   }
-  return { db: request.db, organizationId: request.organizationId, userId: request.user.id };
+  return {
+    db: request.db,
+    organizationId: request.organizationId,
+    userId: request.user.id,
+    role: request.userRole,
+  };
+}
+
+/**
+ * Assert the caller's role is one of `allowed`, else 403. The FIRST role gate in the app (4.8) — RLS
+ * scopes by org; THIS gates by role. Must be called inside a handler AFTER `authenticate`.
+ */
+export function requireRole(request: FastifyRequest, allowed: OrgRole[]): void {
+  if (!request.userRole || !allowed.includes(request.userRole)) {
+    throw new AppError('Insufficient role', { code: 'forbidden', statusCode: 403 });
+  }
 }

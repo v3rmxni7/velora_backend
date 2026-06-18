@@ -111,6 +111,22 @@ export async function isCampaignActive(db: SupabaseClient, campaignId: string): 
   return data?.status === 'active';
 }
 
+/**
+ * 4.8 — a campaign whose assigned SENDER is non-active (paused/setup) blocks sends, so pausing a
+ * sender really stops its campaigns' outbound (cold + follow-up + reply). A campaign with no
+ * sender_id is unrestricted (unchanged behavior). Fail-safe: a dangling/missing sender → false (never
+ * send through a sender we can't confirm active).
+ */
+export async function isSenderActive(db: SupabaseClient, campaignId: string): Promise<boolean> {
+  const camp = await db.from('campaigns').select('sender_id').eq('id', campaignId).maybeSingle();
+  if (camp.error) throw camp.error;
+  const senderId = (camp.data?.sender_id as string | null | undefined) ?? null;
+  if (!senderId) return true; // no assigned sender → not gated
+  const sender = await db.from('senders').select('status').eq('id', senderId).maybeSingle();
+  if (sender.error) throw sender.error;
+  return sender.data?.status === 'active';
+}
+
 export type PrepareOutcome = 'prepared' | 'suppressed' | 'undeliverable' | 'no_email' | 'skipped';
 
 /** Phase 1: gate a pending enrollment, then generate the grounded draft + approval task. */
@@ -187,6 +203,7 @@ export type SendOutcome =
   | 'not_approved'
   | 'suppressed'
   | 'campaign_paused'
+  | 'sender_paused'
   | 'insufficient_credit'
   | 'verification_required'
   | 'rate_limited'
@@ -338,6 +355,12 @@ export async function executeSend(
   // enrollment awaiting_approval so resuming the campaign picks it up (mirrors the rate-limit defer).
   if (!(await isCampaignActive(db, enrollment.campaign_id))) {
     return { outcome: 'campaign_paused' };
+  }
+
+  // 4.8 — a paused/setup assigned sender blocks the campaign's sends too. Defer (write nothing,
+  // leave resumable), mirroring the campaign-pause defer.
+  if (!(await isSenderActive(db, enrollment.campaign_id))) {
+    return { outcome: 'sender_paused' };
   }
 
   const mode = await getSendingMode(db, org);
