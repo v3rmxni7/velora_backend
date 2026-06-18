@@ -100,6 +100,20 @@ export async function resolveAudience(
     if (sub.error) throw sub.error;
     return { connected: !!sub.data, source: 'signals', members: [] };
   }
+  // 4.6 — website_visitor is sourced by an installed tracking pixel. Connected once a tracked domain is
+  // linked to this campaign (the pixel collects REAL anonymous visits immediately); it enrolls 0 at
+  // launch — identified people enroll over time via the website-visitor monitor (which is itself
+  // dormant until a de-anon vendor connects). members stays [] → never a fabricated audience.
+  if (campaign.campaign_type === 'website_visitor') {
+    const dom = await db
+      .from('website_tracked_domains')
+      .select('id')
+      .eq('campaign_id', campaign.id)
+      .limit(1)
+      .maybeSingle();
+    if (dom.error) throw dom.error;
+    return { connected: !!dom.data, source: 'website_visitors', members: [] };
+  }
   return {
     connected: false,
     source: NON_COLD_SOURCE[campaign.campaign_type ?? ''] ?? 'crm',

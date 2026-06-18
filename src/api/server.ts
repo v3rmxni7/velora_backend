@@ -19,12 +19,14 @@ import { inboxRoute } from './routes/inbox.js';
 import { kbRoute } from './routes/kb.js';
 import { leadsRoute } from './routes/leads.js';
 import { listsRoute } from './routes/lists.js';
+import { pixelRoute } from './routes/pixel.js';
 import { proofItemsRoute } from './routes/proof-items.js';
 import { sendersRoute } from './routes/senders.js';
 import { sendingRoute } from './routes/sending.js';
 import { signalsRoute } from './routes/signals.js';
 import { tasksRoute } from './routes/tasks.js';
 import { webhooksRoute } from './routes/webhooks.js';
+import { websiteVisitorsRoute } from './routes/website-visitors.js';
 
 const app = Fastify({ logger: true });
 
@@ -62,6 +64,7 @@ async function start(): Promise<void> {
   await app.register(sendersRoute);
   await app.register(campaignsRoute);
   await app.register(signalsRoute);
+  await app.register(websiteVisitorsRoute);
   await app.register(inboxRoute);
   await app.register(deliverabilityRoute);
   await app.register(creditsRoute);
@@ -69,6 +72,10 @@ async function start(): Promise<void> {
   await app.register(autonomyRoute);
   // Encapsulated so its raw-body parser stays scoped to the webhook route only.
   await app.register(webhooksRoute);
+  // PUBLIC pixel (no JWT) — a GET image beacon + the tracker script. Registered separately like the
+  // webhook; it resolves the org from the site_key (never the request) and only ever writes an
+  // anonymous visit. A GET image beacon sidesteps CORS entirely.
+  await app.register(pixelRoute);
   // Inngest serve handler at /api/inngest — makes async jobs (draft-generate, and the
   // Phase-2 campaign/warmup/inbox functions) runnable. The async draft path calls the
   // SAME runDraftGeneration as the sync /tasks/generate-sync route; both coexist.

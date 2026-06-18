@@ -37,6 +37,12 @@ const EnvSchema = z.object({
   // Email verification (MillionVerifier) — Phase 2 Slice 2.4. Absent → verification skipped.
   MILLIONVERIFIER_API_KEY: z.string().optional(),
 
+  // Website-visitor de-anon resolver (Slice 4.6) — 🔌 EXTERNAL, NOT connected. Absent → getResolver()
+  // returns null and the website-visitor-monitor sweep is a no-op (visits recorded, never resolved;
+  // People/Companies tabs honestly empty). Person-level resolution additionally requires a per-org
+  // consent flag (ships with the de-anon connection slice). NEVER resolves a human on key-presence alone.
+  WEBSITE_VISITOR_RESOLVER_API_KEY: z.string().optional(),
+
   // Send volume governor (Slice 2.9 / audit H4) — Velora-side daily ceilings enforced at the send
   // chokepoint, independent of Smartlead's per-campaign cap. Conservative pilot defaults.
   DAILY_SEND_CAP_PER_ORG: z.coerce.number().int().nonnegative().default(50),

@@ -8,6 +8,7 @@ import { kbIngest } from './functions/kb-ingest.js';
 import { replyDraft } from './functions/reply-draft.js';
 import { signalMonitor } from './functions/signal-monitor.js';
 import { warmupMonitor } from './functions/warmup-monitor.js';
+import { websiteVisitorMonitor } from './functions/website-visitor-monitor.js';
 
 export { inngest } from './client.js';
 
@@ -23,4 +24,5 @@ export const functions = [
   replyDraft,
   anomalyMonitor,
   signalMonitor,
+  websiteVisitorMonitor,
 ];
