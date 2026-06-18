@@ -59,6 +59,8 @@ export interface GenerateInput {
   campaignId?: string | null;
   /** Sequence step (1 = first touch). >1 coaches the Writer to produce a brief follow-up. */
   stepNumber?: number;
+  /** A/Z cohort (4.4). Resolved here to a steering angle; null → no angle → byte-identical draft. */
+  variantId?: string | null;
 }
 // Injectable seams (default to the real LLM agents) — lets verification fire the template
 // path deterministically and run the cheap-tier A/B by swapping the provider registry.
@@ -124,25 +126,39 @@ export async function generateDraft(
       .eq('organization_id', organizationId)
       .limit(20),
   ]);
-  const coaching = (cpRes.data ?? []).map((r) => String(r.content));
-  // Follow-up steps reuse the same grounded pipeline; a coaching line (the Writer is already
-  // coached on `coaching`) steers step 2+ to a genuine brief follow-up rather than a re-send.
-  // Step 1 is untouched — no extra line — so its output is byte-identical to today.
+  const coachingPoints = (cpRes.data ?? []).map((r) => String(r.content));
+  // Steering lines (follow-up cue, campaign-type angle, A/Z variant angle) go at the FRONT of
+  // coaching[] so they always survive the Writer's coaching.slice(0,20) cap, even for an org with
+  // many coaching points (4.4; also fixes a latent 3.2/4.3 truncation). When there are NO steering
+  // lines (a cold step-1 with no variant) coaching === coachingPoints → byte-identical to pre-4.4.
+  const steering: string[] = [];
+  // Follow-up steps (step 2+) get a brief-follow-up cue; step 1 gets none.
   if ((input.stepNumber ?? 1) > 1) {
-    coaching.push(
+    steering.push(
       'This is a brief follow-up to an earlier, unanswered email. Acknowledge the prior note in one short line, add a single fresh reason to reply, and keep it shorter than a first touch. Do NOT repeat the first email.',
     );
   }
-  // 4.3 — type-appropriate angle. A single cheap lookup; cold/unknown → no line (byte-identical).
+  // 4.3 type angle + 4.4 variant angle — resolved HERE (the single site already hitting campaigns).
+  // cold/unknown type → no line; null variant → no line (each keeps the byte-identical guarantee).
   if (input.campaignId) {
     const camp = await db
       .from('campaigns')
       .select('campaign_type')
       .eq('id', input.campaignId)
       .maybeSingle();
-    const line = campaignTypeCoaching(camp.data?.campaign_type as string | null | undefined);
-    if (line) coaching.push(line);
+    const typeLine = campaignTypeCoaching(camp.data?.campaign_type as string | null | undefined);
+    if (typeLine) steering.push(typeLine);
   }
+  if (input.variantId) {
+    const v = await db
+      .from('campaign_variants')
+      .select('angle')
+      .eq('id', input.variantId)
+      .maybeSingle();
+    const angle = (v.data?.angle as string | null | undefined) ?? null;
+    if (angle?.trim()) steering.push(angle.trim());
+  }
+  const coaching = [...steering, ...coachingPoints];
   const proof = (piRes.data ?? []).map((r) => ({
     id: String(r.id),
     text: [r.title, r.body].filter(Boolean).join(' — '),

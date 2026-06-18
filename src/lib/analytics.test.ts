@@ -109,14 +109,56 @@ describe('buildMessaging', () => {
         enrollment_id: 'e1',
       },
     ];
-    const m = buildMessaging(range, msgs, new Map([['e1', 'c1']]), new Map([['c1', 'Demo']]));
+    const m = buildMessaging(
+      range,
+      msgs,
+      new Map([['e1', 'c1']]),
+      new Map([['c1', 'Demo']]),
+      new Map([['e1', 'v1']]),
+      new Map([['v1', 'A']]),
+    );
     expect(m.byStatus.dry_run).toBe(1);
     expect(m.byStatus.sent).toBe(1);
     expect(m.byStatus.queued).toBe(0); // zeroed but present
     expect(m.realSends).toBe(1);
     expect(m.byCampaign).toEqual([
-      { campaignId: 'c1', name: 'Demo', drafts: 2, sent: 1, replies: 1 },
+      { campaignId: 'c1', name: 'Demo', drafts: 2, sent: 1, replies: 1, positive: 1 },
     ]);
+    // 4.4 — the same data rolled up by variant (the 'interested' inbound counts as positive).
+    expect(m.byVariant).toEqual([
+      {
+        variantId: 'v1',
+        label: 'A',
+        campaignId: 'c1',
+        campaignName: 'Demo',
+        drafts: 2,
+        sent: 1,
+        replies: 1,
+        positive: 1,
+      },
+    ]);
+  });
+
+  it('byVariant excludes enrollment-detached messages + stays empty when no variants are mapped', () => {
+    const msgs: MsgRow[] = [
+      {
+        created_at: '2026-06-16T01:00:00Z',
+        direction: 'outbound',
+        status: 'sent',
+        category: null,
+        enrollment_id: 'e1',
+      },
+      {
+        created_at: '2026-06-16T02:00:00Z',
+        direction: 'outbound',
+        status: 'sent',
+        category: null,
+        enrollment_id: null,
+      }, // detached → excluded
+    ];
+    const m = buildMessaging(range, msgs, new Map([['e1', 'c1']]), new Map([['c1', 'Demo']]));
+    expect(m.byVariant).toEqual([]); // no variant map → no rollup
+    expect(m.byCampaign[0]?.drafts).toBe(1); // only the attached message counts
   });
 });
 

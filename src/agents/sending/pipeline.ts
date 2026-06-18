@@ -46,6 +46,8 @@ export interface EnrollmentRecord {
   task_id?: string | null;
   verification?: string | null;
   verified_email?: string | null;
+  /** A/Z cohort (4.4). Carried on every read path so step 1 + follow-ups share the same variant. */
+  variant_id?: string | null;
 }
 
 interface ApprovedDraft {
@@ -161,6 +163,7 @@ export async function prepareEnrollment(
       leadType: enrollment.lead_type,
       leadId: enrollment.lead_id,
       campaignId: enrollment.campaign_id,
+      variantId: enrollment.variant_id ?? null,
     },
     deps,
   );

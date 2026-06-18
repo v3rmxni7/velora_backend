@@ -160,12 +160,27 @@ export interface CampaignRollup {
   drafts: number;
   sent: number;
   replies: number;
+  positive: number;
+}
+// A/Z variant rollup (4.4) — DERIVED from messages via message→enrollment→variant. A variant row
+// counts only messages still linked to an enrollment (an enrollment-detached message is honestly
+// excluded). realSends===0 → all-zero rows (the comparison is honest-empty, never a fabricated winner).
+export interface VariantRollup {
+  variantId: string;
+  label: string;
+  campaignId: string;
+  campaignName: string;
+  drafts: number;
+  sent: number;
+  replies: number;
+  positive: number;
 }
 export interface MessagingData {
   range: RangeOut;
   realSends: number;
   byStatus: Record<string, number>;
   byCampaign: CampaignRollup[];
+  byVariant: VariantRollup[];
 }
 
 export function buildMessaging(
@@ -173,6 +188,8 @@ export function buildMessaging(
   messages: MsgRow[],
   enrToCampaign: Map<string, string>,
   campaignName: Map<string, string>,
+  enrToVariant: Map<string, string> = new Map(),
+  variantLabel: Map<string, string> = new Map(),
 ): MessagingData {
   const days = eachUtcDay(range);
   const outbound = messages.filter((m) => m.direction === 'outbound');
@@ -183,7 +200,7 @@ export function buildMessaging(
     if (m.status in byStatus) byStatus[m.status] = (byStatus[m.status] ?? 0) + 1;
 
   const camp = new Map<string, CampaignRollup>();
-  const ensure = (id: string): CampaignRollup => {
+  const ensureCampaign = (id: string): CampaignRollup => {
     let row = camp.get(id);
     if (!row) {
       row = {
@@ -192,21 +209,48 @@ export function buildMessaging(
         drafts: 0,
         sent: 0,
         replies: 0,
+        positive: 0,
       };
       camp.set(id, row);
     }
     return row;
   };
-  for (const m of messages) {
-    const cid = m.enrollment_id ? enrToCampaign.get(m.enrollment_id) : undefined;
-    if (!cid) continue;
-    const row = ensure(cid);
+  const variant = new Map<string, VariantRollup>();
+  const ensureVariant = (variantId: string, campaignId: string): VariantRollup => {
+    let row = variant.get(variantId);
+    if (!row) {
+      row = {
+        variantId,
+        label: variantLabel.get(variantId) ?? '—',
+        campaignId,
+        campaignName: campaignName.get(campaignId) ?? 'Untitled',
+        drafts: 0,
+        sent: 0,
+        replies: 0,
+        positive: 0,
+      };
+      variant.set(variantId, row);
+    }
+    return row;
+  };
+
+  // One pass: every message attributes to its campaign rollup, and (if its enrollment carries a
+  // variant) its variant rollup. Same counting rule for both, so the two tables stay consistent.
+  const tally = (row: CampaignRollup | VariantRollup, m: MsgRow) => {
     if (m.direction === 'outbound') {
       row.drafts += 1;
       if (m.status !== 'dry_run') row.sent += 1;
     } else if (m.direction === 'inbound') {
       row.replies += 1;
+      if (m.category === 'interested') row.positive += 1;
     }
+  };
+  for (const m of messages) {
+    if (!m.enrollment_id) continue; // enrollment-detached → honestly excluded from both rollups
+    const cid = enrToCampaign.get(m.enrollment_id);
+    if (cid) tally(ensureCampaign(cid), m);
+    const vid = enrToVariant.get(m.enrollment_id);
+    if (vid && cid) tally(ensureVariant(vid, cid), m);
   }
 
   return {
@@ -214,6 +258,7 @@ export function buildMessaging(
     realSends,
     byStatus,
     byCampaign: [...camp.values()].sort((a, b) => b.drafts - a.drafts),
+    byVariant: [...variant.values()].sort((a, b) => b.drafts - a.drafts),
   };
 }
 

@@ -32,7 +32,7 @@ export const campaignExecutor = inngest.createFunction(
       const { data, error } = await db
         .from('enrollments')
         .select(
-          'id, organization_id, campaign_id, lead_type, lead_id, status, current_step, task_id',
+          'id, organization_id, campaign_id, lead_type, lead_id, status, current_step, task_id, variant_id',
         )
         .eq('campaign_id', campaignId)
         .eq('status', 'pending');

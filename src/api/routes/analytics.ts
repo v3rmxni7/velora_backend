@@ -53,15 +53,22 @@ export const analyticsRoute: FastifyPluginAsync = async (app) => {
     if (msg.error) throw msg.error;
     const messages = (msg.data ?? []) as MsgRow[];
 
-    // Resolve enrollment → campaign + campaign names (RLS-scoped). Two small lookups, no join.
+    // Resolve enrollment → campaign + variant, and the campaign/variant labels (RLS-scoped lookups,
+    // no join). enrToVariant + variantLabel light up the A/Z "by variant" rollup (4.4).
     const enrIds = [...new Set(messages.map((m) => m.enrollment_id).filter(Boolean))] as string[];
     const enrToCampaign = new Map<string, string>();
+    const enrToVariant = new Map<string, string>();
     const campaignName = new Map<string, string>();
+    const variantLabel = new Map<string, string>();
     if (enrIds.length > 0) {
-      const enr = await db.from('enrollments').select('id, campaign_id').in('id', enrIds);
+      const enr = await db
+        .from('enrollments')
+        .select('id, campaign_id, variant_id')
+        .in('id', enrIds);
       if (enr.error) throw enr.error;
       for (const r of enr.data ?? []) {
         if (r.campaign_id) enrToCampaign.set(r.id as string, r.campaign_id as string);
+        if (r.variant_id) enrToVariant.set(r.id as string, r.variant_id as string);
       }
       const campIds = [...new Set(enrToCampaign.values())];
       if (campIds.length > 0) {
@@ -71,8 +78,25 @@ export const analyticsRoute: FastifyPluginAsync = async (app) => {
           campaignName.set(c.id as string, (c.name as string) ?? 'Untitled');
         }
       }
+      const variantIds = [...new Set(enrToVariant.values())];
+      if (variantIds.length > 0) {
+        const vs = await db.from('campaign_variants').select('id, label').in('id', variantIds);
+        if (vs.error) throw vs.error;
+        for (const v of vs.data ?? []) {
+          variantLabel.set(v.id as string, (v.label as string) ?? '—');
+        }
+      }
     }
-    return { data: buildMessaging(range, messages, enrToCampaign, campaignName) };
+    return {
+      data: buildMessaging(
+        range,
+        messages,
+        enrToCampaign,
+        campaignName,
+        enrToVariant,
+        variantLabel,
+      ),
+    };
   });
 
   app.get('/analytics/credits', async (request) => {

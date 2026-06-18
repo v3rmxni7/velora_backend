@@ -142,6 +142,7 @@ export async function runFollowupStep(
       leadId: enrollment.lead_id,
       campaignId: enrollment.campaign_id,
       stepNumber: nextStep,
+      variantId: enrollment.variant_id ?? null, // same cohort as step 1
     },
     deps,
   );

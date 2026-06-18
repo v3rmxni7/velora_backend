@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { AppError } from '../../lib/errors.js';
+import { assignVariantIndex } from './assign-variant.js';
 
 // Campaign enrollment core (Phase 2 Slice 2.2). Launch = read a list's members → create
 // 'pending' enrollment rows. No drafts, no sends — that's the 2.3 pipeline.
@@ -43,6 +44,13 @@ export interface EnrollmentRow {
   lead_id: string;
   status: 'pending';
   current_step: number;
+  /** A/Z cohort (4.4): set once at launch when the campaign has variants; else NULL (cold path). */
+  variant_id?: string;
+}
+
+/** A campaign variant for cohort assignment — ordered by label so index→id is stable. */
+export interface VariantRef {
+  id: string;
 }
 
 /** Where a campaign type sources its audience. Only 'list' (cold) is connected today. */
@@ -91,19 +99,32 @@ export interface LaunchResult {
   source: AudienceSource;
 }
 
-/** Pure: list members → enrollment rows (each lead starts pending at step 1). */
+/**
+ * Pure: list members → enrollment rows (each lead starts pending at step 1). When the campaign has
+ * variants (ordered by label), each lead is stamped with a deterministic A/Z cohort (4.4): the same
+ * lead always lands in the same variant, so a re-launch never reshuffles. 0 variants → no variant_id
+ * (the cold path; byte-identical to pre-4.4).
+ */
 export function mapMembersToEnrollments(
   members: ListMember[],
   campaign: CampaignRef,
+  variants: VariantRef[] = [],
 ): EnrollmentRow[] {
-  return members.map((m) => ({
-    organization_id: campaign.organization_id,
-    campaign_id: campaign.id,
-    lead_type: m.entity_type,
-    lead_id: m.entity_id,
-    status: 'pending',
-    current_step: 1,
-  }));
+  return members.map((m) => {
+    const row: EnrollmentRow = {
+      organization_id: campaign.organization_id,
+      campaign_id: campaign.id,
+      lead_type: m.entity_type,
+      lead_id: m.entity_id,
+      status: 'pending',
+      current_step: 1,
+    };
+    if (variants.length > 0) {
+      const key = `${campaign.id}:${m.entity_type}:${m.entity_id}`;
+      row.variant_id = variants[assignVariantIndex(key, variants.length)]?.id;
+    }
+    return row;
+  });
 }
 
 /**
@@ -121,7 +142,19 @@ export async function launchCampaign(
   if (!audience.connected) {
     return { enrolled: 0, sourceConnected: false, source: audience.source };
   }
-  const rows = mapMembersToEnrollments(audience.members, campaign);
+  // A/Z (4.4): the campaign's variants, ordered by label so index→id is a stable anchor for the
+  // deterministic cohort assignment. Empty → enrollments keep variant_id NULL (the cold path).
+  const variantsRes = await db
+    .from('campaign_variants')
+    .select('id')
+    .eq('campaign_id', campaign.id)
+    .order('label', { ascending: true });
+  if (variantsRes.error) throw variantsRes.error;
+  const rows = mapMembersToEnrollments(
+    audience.members,
+    campaign,
+    (variantsRes.data ?? []) as VariantRef[],
+  );
   let enrolled = 0;
   if (rows.length > 0) {
     const up = await db

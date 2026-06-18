@@ -21,6 +21,11 @@ const StepInput = z.object({
   subjectTemplate: z.string().max(300).nullish(),
 });
 const PutSteps = z.object({ steps: z.array(StepInput).min(1).max(20) });
+const VariantInput = z.object({
+  label: z.string().min(1).max(80),
+  angle: z.string().min(1).max(300),
+});
+const PutVariants = z.object({ variants: z.array(VariantInput).min(1).max(4) });
 const EnrollmentQuery = z.object({
   status: z
     .enum([
@@ -95,13 +100,21 @@ export const campaignsRoute: FastifyPluginAsync = async (app) => {
     const c = await db.from('campaigns').select('*').eq('id', id).maybeSingle();
     if (c.error) throw c.error;
     if (!c.data) return reply.code(404).send({ error: 'not_found' });
-    const steps = await db
-      .from('campaign_steps')
-      .select('*')
-      .eq('campaign_id', id)
-      .order('step_number', { ascending: true });
+    const [steps, variants] = await Promise.all([
+      db
+        .from('campaign_steps')
+        .select('*')
+        .eq('campaign_id', id)
+        .order('step_number', { ascending: true }),
+      db
+        .from('campaign_variants')
+        .select('*')
+        .eq('campaign_id', id)
+        .order('label', { ascending: true }),
+    ]);
     if (steps.error) throw steps.error;
-    return { data: { ...c.data, steps: steps.data ?? [] } };
+    if (variants.error) throw variants.error;
+    return { data: { ...c.data, steps: steps.data ?? [], variants: variants.data ?? [] } };
   });
 
   app.post('/campaigns/:id/launch', async (request, reply) => {
@@ -178,6 +191,39 @@ export const campaignsRoute: FastifyPluginAsync = async (app) => {
       .insert(rows)
       .select('*')
       .order('step_number', { ascending: true });
+    if (ins.error) throw ins.error;
+    return { data: ins.data };
+  });
+
+  // Author the A/Z variants (4.4): REPLACE the whole list, draft-only. Variants steer the angle Ava
+  // writes (a coaching line), never fabricated copy. Locked once launched so a live cohort's ordered
+  // anchor never shifts (a re-assignment would reshuffle which lead is in which variant).
+  app.put('/campaigns/:id/variants', async (request, reply) => {
+    const { db, organizationId } = requireAuth(request);
+    const { id } = IdParam.parse(request.params);
+    const body = PutVariants.parse(request.body);
+    const c = await db.from('campaigns').select('id, status').eq('id', id).maybeSingle();
+    if (c.error) throw c.error;
+    if (!c.data) return reply.code(404).send({ error: 'not_found' });
+    if (c.data.status !== 'draft') {
+      return reply.code(422).send({
+        error: 'variants_locked',
+        message: 'Variants can only be edited while the campaign is a draft.',
+      });
+    }
+    const del = await db.from('campaign_variants').delete().eq('campaign_id', id);
+    if (del.error) throw del.error;
+    const rows = body.variants.map((v) => ({
+      organization_id: organizationId,
+      campaign_id: id,
+      label: v.label,
+      angle: v.angle,
+    }));
+    const ins = await db
+      .from('campaign_variants')
+      .insert(rows)
+      .select('*')
+      .order('label', { ascending: true });
     if (ins.error) throw ins.error;
     return { data: ins.data };
   });

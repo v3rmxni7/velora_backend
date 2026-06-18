@@ -12,6 +12,8 @@ export interface RunDraftInput {
   campaignId?: string | null;
   /** Sequence step (1 = first touch). Namespaces the draft so step 2+ is a distinct task. */
   stepNumber?: number;
+  /** A/Z cohort (4.4). Resolved to a steering angle inside generateDraft; NOT in the dedupe_key. */
+  variantId?: string | null;
 }
 
 export async function runDraftGeneration(
@@ -23,7 +25,15 @@ export async function runDraftGeneration(
   const stepNumber = input.stepNumber ?? 1;
 
   const payload = await generateDraft(
-    { db, organizationId, leadType, leadId, campaignId, stepNumber },
+    {
+      db,
+      organizationId,
+      leadType,
+      leadId,
+      campaignId,
+      stepNumber,
+      variantId: input.variantId ?? null,
+    },
     deps,
   );
 
