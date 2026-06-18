@@ -16,6 +16,8 @@ import { findLeadsRoute } from './routes/find-leads.js';
 import { healthRoute } from './routes/health.js';
 import { icpProfilesRoute } from './routes/icp-profiles.js';
 import { inboxRoute } from './routes/inbox.js';
+import { integrationsRoute } from './routes/integrations.js';
+import { integrationsOAuthRoute } from './routes/integrations-oauth.js';
 import { kbRoute } from './routes/kb.js';
 import { leadsRoute } from './routes/leads.js';
 import { listsRoute } from './routes/lists.js';
@@ -65,6 +67,7 @@ async function start(): Promise<void> {
   await app.register(campaignsRoute);
   await app.register(signalsRoute);
   await app.register(websiteVisitorsRoute);
+  await app.register(integrationsRoute);
   await app.register(inboxRoute);
   await app.register(deliverabilityRoute);
   await app.register(creditsRoute);
@@ -76,6 +79,9 @@ async function start(): Promise<void> {
   // webhook; it resolves the org from the site_key (never the request) and only ever writes an
   // anonymous visit. A GET image beacon sidesteps CORS entirely.
   await app.register(pixelRoute);
+  // PUBLIC OAuth callback (no JWT) — its own plugin so it never inherits the authed integrations
+  // route's `authenticate` hook. Resolves the org from a signed, single-use state, never the query.
+  await app.register(integrationsOAuthRoute);
   // Inngest serve handler at /api/inngest — makes async jobs (draft-generate, and the
   // Phase-2 campaign/warmup/inbox functions) runnable. The async draft path calls the
   // SAME runDraftGeneration as the sync /tasks/generate-sync route; both coexist.

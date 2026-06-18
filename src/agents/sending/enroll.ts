@@ -114,6 +114,23 @@ export async function resolveAudience(
     if (dom.error) throw dom.error;
     return { connected: !!dom.data, source: 'website_visitors', members: [] };
   }
+  // 4.7 — warm_outbound + cross_sell are sourced from a connected CRM. Connected once a connected CRM
+  // integration is LINKED to this campaign (integrations.campaign_id); it enrolls 0 at launch —
+  // identified contacts enroll over time via the crm-sync monitor (itself dormant until a CRM vendor
+  // connects). Reads the secret-FREE integrations metadata under RLS (tokens live in the service-role
+  // integration_secrets vault). members stays [] → never a fabricated audience.
+  if (campaign.campaign_type === 'warm_outbound' || campaign.campaign_type === 'cross_sell') {
+    const intg = await db
+      .from('integrations')
+      .select('id')
+      .eq('campaign_id', campaign.id)
+      .eq('kind', 'crm')
+      .eq('status', 'connected')
+      .limit(1)
+      .maybeSingle();
+    if (intg.error) throw intg.error;
+    return { connected: !!intg.data, source: 'crm', members: [] };
+  }
   return {
     connected: false,
     source: NON_COLD_SOURCE[campaign.campaign_type ?? ''] ?? 'crm',

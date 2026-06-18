@@ -43,6 +43,16 @@ const EnvSchema = z.object({
   // consent flag (ships with the de-anon connection slice). NEVER resolves a human on key-presence alone.
   WEBSITE_VISITOR_RESOLVER_API_KEY: z.string().optional(),
 
+  // CRM connect + sync (Slice 4.7) — 🔌 EXTERNAL, NOT configured. Absent → /integrations/crm/connect
+  // returns 'not_configured' (no fake connection) and the crm-sync-monitor is a no-op. OAUTH_STATE_SECRET
+  // signs the single-use OAuth CSRF state. Tokens (when a real CRM connects at go-live) live ONLY in the
+  // service-role integration_secrets vault, never on a client-readable column.
+  HUBSPOT_CLIENT_ID: z.string().optional(),
+  HUBSPOT_CLIENT_SECRET: z.string().optional(),
+  SALESFORCE_CLIENT_ID: z.string().optional(),
+  SALESFORCE_CLIENT_SECRET: z.string().optional(),
+  OAUTH_STATE_SECRET: z.string().optional(),
+
   // Send volume governor (Slice 2.9 / audit H4) — Velora-side daily ceilings enforced at the send
   // chokepoint, independent of Smartlead's per-campaign cap. Conservative pilot defaults.
   DAILY_SEND_CAP_PER_ORG: z.coerce.number().int().nonnegative().default(50),
