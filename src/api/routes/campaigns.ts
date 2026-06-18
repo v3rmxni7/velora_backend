@@ -10,7 +10,8 @@ import { authenticate, requireAuth } from '../middleware/auth.js';
 
 const CreateCampaign = z.object({
   name: z.string().min(1).max(200),
-  listId: z.uuid(),
+  // Optional: cold_outbound takes a List; non-cold types (intent_signals, …) source elsewhere.
+  listId: z.uuid().optional(),
   senderId: z.uuid().optional(),
   campaignType: z.enum(ALL_CAMPAIGN_TYPES).default('cold_outbound'),
 });
@@ -52,9 +53,18 @@ export const campaignsRoute: FastifyPluginAsync = async (app) => {
     const body = CreateCampaign.parse(request.body);
     assertSupportedCampaignType(body.campaignType);
 
-    const list = await db.from('lists').select('id').eq('id', body.listId).maybeSingle();
-    if (list.error) throw list.error;
-    if (!list.data) return reply.code(404).send({ error: 'list_not_found' });
+    // cold_outbound requires a List; non-cold types (intent_signals, …) have no list at create —
+    // their audience comes from elsewhere (e.g. a signal subscription). Validate the list only when given.
+    if (body.campaignType === 'cold_outbound' && !body.listId) {
+      return reply
+        .code(400)
+        .send({ error: 'list_required', message: 'Cold outbound needs an audience list.' });
+    }
+    if (body.listId) {
+      const list = await db.from('lists').select('id').eq('id', body.listId).maybeSingle();
+      if (list.error) throw list.error;
+      if (!list.data) return reply.code(404).send({ error: 'list_not_found' });
+    }
 
     const campaign = await db
       .from('campaigns')
@@ -63,7 +73,7 @@ export const campaignsRoute: FastifyPluginAsync = async (app) => {
         sender_id: body.senderId ?? null,
         name: body.name,
         campaign_type: body.campaignType,
-        list_id: body.listId,
+        list_id: body.listId ?? null,
         status: 'draft',
       })
       .select('*')

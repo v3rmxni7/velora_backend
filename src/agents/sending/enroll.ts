@@ -86,6 +86,20 @@ export async function resolveAudience(
     if (members.error) throw members.error;
     return { connected: true, source: 'list', members: (members.data ?? []) as ListMember[] };
   }
+  // 4.5 — intent_signals is sourced by a live signal SUBSCRIPTION. Connected once subscribed; it
+  // enrolls 0 at launch (signal_events drive enrollment over time via the monitor). members stays
+  // [] either way → never a fabricated audience.
+  if (campaign.campaign_type === 'intent_signals') {
+    const sub = await db
+      .from('signal_subscriptions')
+      .select('id')
+      .eq('campaign_id', campaign.id)
+      .eq('active', true)
+      .limit(1)
+      .maybeSingle();
+    if (sub.error) throw sub.error;
+    return { connected: !!sub.data, source: 'signals', members: [] };
+  }
   return {
     connected: false,
     source: NON_COLD_SOURCE[campaign.campaign_type ?? ''] ?? 'crm',

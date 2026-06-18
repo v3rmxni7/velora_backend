@@ -6,6 +6,7 @@ import { enrichment } from './functions/enrichment.js';
 import { inboxPoller } from './functions/inbox-poller.js';
 import { kbIngest } from './functions/kb-ingest.js';
 import { replyDraft } from './functions/reply-draft.js';
+import { signalMonitor } from './functions/signal-monitor.js';
 import { warmupMonitor } from './functions/warmup-monitor.js';
 
 export { inngest } from './client.js';
@@ -21,4 +22,5 @@ export const functions = [
   draftGenerate,
   replyDraft,
   anomalyMonitor,
+  signalMonitor,
 ];
