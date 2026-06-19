@@ -22,13 +22,18 @@ export const OUTBOUND_STATUSES = [
   'failed',
 ] as const;
 
-/** credit_ledger reasons (the reason CHECK). */
+/** credit_ledger reasons — MUST mirror the reason CHECK (widened across 4.6/4.10). A reason missing
+ *  here would be silently dropped from the byReason breakdown, so buildCredits also folds any unknown
+ *  reason into an 'other' bucket as forward-compat (audit N1). */
 export const LEDGER_REASONS = [
   'signup_grant',
   'enrichment',
   'send',
   'reply',
   'adjustment',
+  'website_visitor_identification',
+  'quest_reward',
+  'top_up',
 ] as const;
 
 /** calls.outcome values (the outcome CHECK) — for a 0-filled byOutcome (4.9). */
@@ -344,8 +349,12 @@ export function buildCredits(range: DateRange, ledger: LedgerRow[]): CreditsAnal
   });
 
   const byReason: Record<string, number> = Object.fromEntries(LEDGER_REASONS.map((x) => [x, 0]));
-  for (const r of windowed)
-    if (r.reason in byReason) byReason[r.reason] = round6((byReason[r.reason] ?? 0) + r.delta);
+  // Fold any reason not in the seed list into 'other' so a future CHECK addition can never silently
+  // vanish from the breakdown (audit N1).
+  for (const r of windowed) {
+    const key = r.reason in byReason ? r.reason : 'other';
+    byReason[key] = round6((byReason[key] ?? 0) + r.delta);
+  }
 
   const idx = new Map(days.map((d) => [d, { date: d, granted: 0, used: 0 }]));
   for (const r of windowed) {

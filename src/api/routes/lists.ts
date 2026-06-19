@@ -111,6 +111,15 @@ const AddMembers = z.object({ matches: z.array(z.unknown()).min(1).max(200) });
 type EntityType = z.infer<typeof ENTITY>;
 type Row = Record<string, unknown>;
 
+// Dedupe rows by the (provider, external_id) upsert conflict key (keep last) so a single request
+// batch containing the same lead twice can't trip Postgres 21000 "ON CONFLICT DO UPDATE command
+// cannot affect row a second time" → a 500 (audit N7).
+export function dedupeRowsByConflict(rows: Row[]): Row[] {
+  const seen = new Map<string, Row>();
+  for (const r of rows) seen.set(`${String(r.provider)}:${String(r.external_id)}`, r);
+  return [...seen.values()];
+}
+
 function toRow(entityType: EntityType, organizationId: string, match: unknown): Row {
   if (entityType === 'person') {
     const m = PersonInput.parse(match);
@@ -274,7 +283,7 @@ export const listsRoute: FastifyPluginAsync = async (app) => {
     if (!list.data) return reply.code(404).send({ error: 'not_found' });
     const entityType = list.data.entity_type as EntityType;
 
-    const rows = matches.map((m) => toRow(entityType, organizationId, m));
+    const rows = dedupeRowsByConflict(matches.map((m) => toRow(entityType, organizationId, m)));
     const upserted = await db
       .from(TABLE[entityType])
       .upsert(rows, { onConflict: 'organization_id,provider,external_id' })

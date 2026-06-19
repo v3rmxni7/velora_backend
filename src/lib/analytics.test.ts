@@ -211,4 +211,19 @@ describe('buildCredits', () => {
     expect(c.byReason.signup_grant).toBe(0); // grant is outside the window
     expect(c.series).toEqual([{ date: '2026-06-16', granted: 0, used: 3 }]);
   });
+
+  it('counts the newer reasons and folds an unknown reason into "other" (N1)', () => {
+    const range = { fromIso: '2026-06-16T00:00:00.000Z', toIso: '2026-06-16T23:59:59.999Z' };
+    const ledger = [
+      { created_at: '2026-06-16T03:00:00Z', delta: 200, reason: 'quest_reward' },
+      { created_at: '2026-06-16T04:00:00Z', delta: 500, reason: 'top_up' },
+      { created_at: '2026-06-16T05:00:00Z', delta: -1, reason: 'website_visitor_identification' },
+      { created_at: '2026-06-16T06:00:00Z', delta: -3, reason: 'future_reason_not_in_check' },
+    ];
+    const c = buildCredits(range, ledger);
+    expect(c.byReason.quest_reward).toBe(200);
+    expect(c.byReason.top_up).toBe(500);
+    expect(c.byReason.website_visitor_identification).toBe(-1);
+    expect(c.byReason.other).toBe(-3); // unknown reason folded in, never silently dropped
+  });
 });

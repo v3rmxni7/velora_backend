@@ -19,7 +19,9 @@ const IdParam = z.object({ id: z.uuid() });
 const AddCall = z.object({
   leadType: z.enum(['person', 'company', 'local_business']),
   leadId: z.uuid(),
-  scheduledAt: z.string().optional(),
+  // Must be an ISO datetime — a non-date string would otherwise reach the timestamptz insert and 500
+  // with a Postgres 22007 instead of a clean 400 (audit S5).
+  scheduledAt: z.iso.datetime().optional(),
   phone: z.string().max(40).optional(),
 });
 const LogCall = z.object({
@@ -127,7 +129,9 @@ export const dialerRoute: FastifyPluginAsync = async (app) => {
         thread_id: latestThread.data?.id ?? null,
         phone,
         status: scheduled ? 'scheduled' : 'queued',
-        scheduled_at: body.scheduledAt ?? null,
+        // Only store a future scheduled_at; a past/absent date is a plain 'queued' call (keeps the
+        // stored timestamp consistent with the status — no past "scheduled" rows).
+        scheduled_at: scheduled ? body.scheduledAt : null,
       })
       .select(CALL_COLS)
       .single();

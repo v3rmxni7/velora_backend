@@ -4,6 +4,7 @@ import { createSmartleadClient } from '../../integrations/smartlead/smartlead.js
 import type { SmartleadClient } from '../../integrations/smartlead/types.js';
 import { getAutonomyMode, recordAutonomyEvent } from '../../lib/autonomy-mode.js';
 import { getSendingMode } from '../../lib/sending-mode.js';
+import { bestEffortSendDebit } from '../sending/credit-debit.js';
 import { isCampaignActive, isSenderActive, isSuppressed, SEND_COST } from '../sending/pipeline.js';
 import { decideReplyAutoSend } from './auto-reply.js';
 
@@ -182,14 +183,13 @@ export async function executeReplySend(
     // only here in the LIVE branch AFTER a successful push (best-effort; never fails a sent reply).
     const admin = getSupabaseAdmin();
     if (admin) {
-      const debit = await admin.from('credit_ledger').insert({
-        organization_id: org,
-        delta: -SEND_COST,
+      await bestEffortSendDebit(admin, {
+        organizationId: org,
         reason: 'reply',
+        delta: -SEND_COST,
         reference: { type: 'message', id: messageId ?? null },
-        idempotency_key: dedupeKey,
+        idempotencyKey: dedupeKey,
       });
-      if (debit.error && debit.error.code !== '23505') throw debit.error;
     }
     return { outcome: 'queued', messageId };
   }

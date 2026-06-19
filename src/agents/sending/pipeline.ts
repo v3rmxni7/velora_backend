@@ -9,6 +9,7 @@ import { AppError } from '../../lib/errors.js';
 import { assertLiveSendAllowed, getSendingMode } from '../../lib/sending-mode.js';
 import type { GenerateDeps, LeadType } from '../draft/generate.js';
 import { runDraftGeneration } from '../draft/task.js';
+import { bestEffortSendDebit } from './credit-debit.js';
 import { ensureSmartleadCampaign } from './provision.js';
 
 // The gated send pipeline (Phase 2 Slice 2.3), DRY-RUN. Two phases:
@@ -506,15 +507,16 @@ export async function executeSend(
       throw err;
     }
 
-    // Debit credits (service-role). idempotency_key blocks a double-charge on retry; 23505 = no-op.
-    const debit = await admin.from('credit_ledger').insert({
-      organization_id: org,
-      delta: -SEND_COST,
+    // Debit credits (service-role). BEST-EFFORT: the push already happened, so a debit error must
+    // never throw (that would falsely fail the send + leave it un-metered/un-retried via the claim
+    // row). idempotency_key = at-most-once; 23505 no-op; other errors logged to reconcile. (Audit N2.)
+    await bestEffortSendDebit(admin, {
+      organizationId: org,
       reason: 'send',
+      delta: -SEND_COST,
       reference: { type: 'message', id: messageId ?? null },
-      idempotency_key: dedupeKey,
+      idempotencyKey: dedupeKey,
     });
-    if (debit.error && debit.error.code !== '23505') throw debit.error;
 
     return { outcome: 'queued', messageId };
   }
