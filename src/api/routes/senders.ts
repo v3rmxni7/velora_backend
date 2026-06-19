@@ -12,6 +12,7 @@ const PatchSender = z.object({
   displayName: z.string().min(1).max(200).optional(),
   status: z.enum(['setup', 'active', 'paused']).optional(),
   userId: z.uuid().nullish(),
+  signature: z.string().max(2000).nullish(), // 4.10 — sending identity; powers the email-signature quest.
 });
 const PrimaryMailbox = z.object({ mailboxId: z.uuid().nullable() });
 const PatchMailbox = z.object({ senderId: z.uuid().nullable() });
@@ -59,6 +60,7 @@ export const sendersRoute: FastifyPluginAsync = async (app) => {
     if (body.displayName !== undefined) patch.display_name = body.displayName;
     if (body.status !== undefined) patch.status = body.status;
     if (body.userId !== undefined) patch.user_id = body.userId; // null clears the assignment
+    if (body.signature !== undefined) patch.signature = body.signature; // null clears the signature
     const { data, error } = await db
       .from('senders')
       .update(patch)

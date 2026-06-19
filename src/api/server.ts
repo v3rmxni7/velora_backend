@@ -7,6 +7,7 @@ import { AppError } from '../lib/errors.js';
 import { functions, inngest } from '../workers/inngest/index.js';
 import { analyticsRoute } from './routes/analytics.js';
 import { autonomyRoute } from './routes/autonomy.js';
+import { billingRoute } from './routes/billing.js';
 import { campaignsRoute } from './routes/campaigns.js';
 import { coachingPointsRoute } from './routes/coaching-points.js';
 import { copilotRoute } from './routes/copilot.js';
@@ -24,6 +25,7 @@ import { leadsRoute } from './routes/leads.js';
 import { listsRoute } from './routes/lists.js';
 import { pixelRoute } from './routes/pixel.js';
 import { proofItemsRoute } from './routes/proof-items.js';
+import { questsRoute } from './routes/quests.js';
 import { sendersRoute } from './routes/senders.js';
 import { sendingRoute } from './routes/sending.js';
 import { signalsRoute } from './routes/signals.js';
@@ -75,6 +77,8 @@ async function start(): Promise<void> {
   await app.register(inboxRoute);
   await app.register(deliverabilityRoute);
   await app.register(creditsRoute);
+  await app.register(questsRoute);
+  await app.register(billingRoute);
   await app.register(analyticsRoute);
   await app.register(autonomyRoute);
   // Encapsulated so its raw-body parser stays scoped to the webhook route only.
