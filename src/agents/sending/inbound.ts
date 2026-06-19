@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { recordAuditSafe } from '../../lib/audit.js';
 import { getAutonomyMode, recordAutonomyEvent } from '../../lib/autonomy-mode.js';
 import {
   COMPLAINT_EVENTS,
@@ -99,13 +100,25 @@ async function suppress(
   email: string,
   reason: 'bounce' | 'unsubscribe' | 'reply' | 'complaint',
 ): Promise<void> {
-  const { error } = await db
+  const { data, error } = await db
     .from('suppression_list')
     .upsert(
       { organization_id: org, email, reason, source: 'smartlead' },
       { onConflict: 'organization_id,email', ignoreDuplicates: true },
-    );
+    )
+    .select('id');
   if (error) throw error;
+  // Audit only a NEW suppression (ignoreDuplicates returns no row on a dupe → no noisy re-audit). The
+  // webhook path runs under the service-role db, so this append is allowed. (4.12)
+  if ((data ?? []).length > 0) {
+    await recordAuditSafe(db, {
+      organizationId: org,
+      kind: 'suppression_added',
+      args: { reason },
+      reason,
+      source: 'webhook',
+    });
+  }
 }
 
 export async function applySmartleadEvent(

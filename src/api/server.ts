@@ -10,6 +10,7 @@ import { autonomyRoute } from './routes/autonomy.js';
 import { billingRoute } from './routes/billing.js';
 import { campaignsRoute } from './routes/campaigns.js';
 import { coachingPointsRoute } from './routes/coaching-points.js';
+import { complianceRoute } from './routes/compliance.js';
 import { copilotRoute } from './routes/copilot.js';
 import { creditsRoute } from './routes/credits.js';
 import { deliverabilityRoute } from './routes/deliverability.js';
@@ -79,6 +80,7 @@ async function start(): Promise<void> {
   await app.register(creditsRoute);
   await app.register(questsRoute);
   await app.register(billingRoute);
+  await app.register(complianceRoute);
   await app.register(analyticsRoute);
   await app.register(autonomyRoute);
   // Encapsulated so its raw-body parser stays scoped to the webhook route only.

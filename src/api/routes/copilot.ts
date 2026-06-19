@@ -5,6 +5,8 @@ import { WRITE_ACTIONS } from '../../agents/copilot/actions.js';
 import { MAX_HISTORY, runCopilotTurn } from '../../agents/copilot/run.js';
 import { type AccountCounts, suggestActions } from '../../agents/copilot/tools.js';
 import type { LLMMessage } from '../../agents/llm/types.js';
+import { getSupabaseAdmin } from '../../db/client.js';
+import { recordAuditSafe } from '../../lib/audit.js';
 import { authenticate, requireAuth, requireRole } from '../middleware/auth.js';
 
 const CreateThread = z.object({ title: z.string().min(1).max(200).optional() });
@@ -223,6 +225,17 @@ export const copilotRoute: FastifyPluginAsync = async (app) => {
       .select('*')
       .single();
     if (upd.error) throw upd.error;
+
+    // 4.12 — audit a confirmed agentic action (the security-relevant case; a failed run isn't a change).
+    if (status === 'confirmed') {
+      await recordAuditSafe(getSupabaseAdmin(), {
+        organizationId,
+        kind: 'copilot_action_confirmed',
+        userId,
+        args: { actionKind: act.data.kind, title: act.data.title },
+        source: 'user',
+      });
+    }
 
     // A deterministic confirmation message (NOT fabricated LLM text) so the transcript stays coherent.
     await db.from('copilot_messages').insert({

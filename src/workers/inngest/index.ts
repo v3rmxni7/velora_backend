@@ -7,6 +7,7 @@ import { enrichment } from './functions/enrichment.js';
 import { inboxPoller } from './functions/inbox-poller.js';
 import { kbIngest } from './functions/kb-ingest.js';
 import { replyDraft } from './functions/reply-draft.js';
+import { retentionPurge } from './functions/retention-purge.js';
 import { signalMonitor } from './functions/signal-monitor.js';
 import { warmupMonitor } from './functions/warmup-monitor.js';
 import { websiteVisitorMonitor } from './functions/website-visitor-monitor.js';
@@ -27,4 +28,5 @@ export const functions = [
   signalMonitor,
   websiteVisitorMonitor,
   crmSyncMonitor,
+  retentionPurge,
 ];

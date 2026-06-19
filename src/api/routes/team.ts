@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { getSupabaseAdmin } from '../../db/client.js';
+import { recordAuditSafe } from '../../lib/audit.js';
 import { AppError } from '../../lib/errors.js';
 import { authenticate, requireAuth, requireRole } from '../middleware/auth.js';
 
@@ -162,6 +163,13 @@ export const teamRoute: FastifyPluginAsync = async (app) => {
       if (isLastOwnerError(upd.error)) return reply.code(409).send({ error: 'last_owner' });
       throw upd.error;
     }
+    await recordAuditSafe(a, {
+      organizationId,
+      kind: 'team_role_changed',
+      userId,
+      args: { memberId: id, newRole: role, email: upd.data?.email },
+      source: 'user',
+    });
     return { data: upd.data };
   });
 
@@ -192,6 +200,13 @@ export const teamRoute: FastifyPluginAsync = async (app) => {
       if (isLastOwnerError(del.error)) return reply.code(409).send({ error: 'last_owner' });
       throw del.error;
     }
+    await recordAuditSafe(a, {
+      organizationId,
+      kind: 'team_member_removed',
+      userId,
+      args: { memberId: id },
+      source: 'user',
+    });
     return { data: { id, removed: true } };
   });
 };

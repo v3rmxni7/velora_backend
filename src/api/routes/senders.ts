@@ -1,7 +1,9 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { syncMailboxes } from '../../agents/sending/mailbox-sync.js';
+import { getSupabaseAdmin } from '../../db/client.js';
 import { createSmartleadClient } from '../../integrations/smartlead/smartlead.js';
+import { recordAuditSafe } from '../../lib/audit.js';
 import { events, inngest } from '../../workers/inngest/client.js';
 import { authenticate, requireAuth } from '../middleware/auth.js';
 
@@ -47,7 +49,7 @@ export const sendersRoute: FastifyPluginAsync = async (app) => {
   // 4.8 — full sender config (real DB state). All user-scoped (the sn/mb write quartets + RLS scope
   // everything to the caller's org). assign-user / assign-mailbox / set-primary / status.
   app.patch('/senders/:id', async (request, reply) => {
-    const { db } = requireAuth(request);
+    const { db, organizationId, userId } = requireAuth(request);
     const { id } = IdParam.parse(request.params);
     const body = PatchSender.parse(request.body);
     if (body.userId) {
@@ -69,6 +71,16 @@ export const sendersRoute: FastifyPluginAsync = async (app) => {
       .maybeSingle();
     if (error) throw error;
     if (!data) return reply.code(404).send({ error: 'not_found' });
+    // 4.12 — audit a real send-gate change (status) for compliance; other field edits aren't gated.
+    if (body.status !== undefined) {
+      await recordAuditSafe(getSupabaseAdmin(), {
+        organizationId,
+        kind: 'sender_status_changed',
+        userId,
+        args: { senderId: id, newStatus: body.status },
+        source: 'user',
+      });
+    }
     return { data };
   });
 

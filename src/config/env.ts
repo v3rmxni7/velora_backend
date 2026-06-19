@@ -37,6 +37,10 @@ const EnvSchema = z.object({
   // Email verification (MillionVerifier) — Phase 2 Slice 2.4. Absent → verification skipped.
   MILLIONVERIFIER_API_KEY: z.string().optional(),
 
+  // DKIM selector (Slice 4.12) — DKIM verification needs a selector we don't generically know. Absent
+  // → DKIM stays honestly 'unknown' (never a fabricated 'pass'); SPF + DMARC verify regardless.
+  DKIM_SELECTOR: z.string().optional(),
+
   // Website-visitor de-anon resolver (Slice 4.6) — 🔌 EXTERNAL, NOT connected. Absent → getResolver()
   // returns null and the website-visitor-monitor sweep is a no-op (visits recorded, never resolved;
   // People/Companies tabs honestly empty). Person-level resolution additionally requires a per-org
