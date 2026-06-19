@@ -1,5 +1,6 @@
 ﻿# Context docs index
 
+- RUNBOOK.md -> GO-LIVE RUNBOOK: deploy checklist (Railway + Vercel), migrations, Inngest, the deliberate two-flag go-live flip, QA playbook, kill-switch, and the honesty contract. Read before any deploy.
 - ../SPEC.md  -> MASTER BUILD PLAN. Read this first. Source of truth.
 - research/   -> supporting research (technical build, cost/economics, UI/UX, sales-agent plan). Open on demand.
 - artisan-screenshots/ -> screenshots of the competitor product (Artisan/Ava) dashboard that Velora replicates.
