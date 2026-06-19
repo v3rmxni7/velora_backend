@@ -47,9 +47,11 @@ describe('CopilotPlanSchema (authoritative — model output is not trusted)', ()
     expect(r.success).toBe(true);
   });
 
-  it('rejects an unknown tool name', () => {
+  it('accepts any tool string at the schema (unknown names are rejected in dispatch, not here)', () => {
+    // 4.11: `tool` is now a free string (read tools + write actions share the field); an unknown name
+    // parses but dispatch returns "I can't do that yet" — so the schema no longer rejects it.
     expect(CopilotPlanSchema.safeParse({ action: 'tool', tool: 'delete_everything' }).success).toBe(
-      false,
+      true,
     );
   });
 
@@ -65,7 +67,14 @@ describe('CopilotPlanSchema (authoritative — model output is not trusted)', ()
 describe('runCopilotTurn', () => {
   it('reply path: returns the planner reply and never touches the db (1 call, no tool)', async () => {
     const turn = await runCopilotTurn(
-      { db: throwingDb, organizationId: 'org', history: [], userMessage: 'hello' },
+      {
+        db: throwingDb,
+        organizationId: 'org',
+        userId: 'u',
+        role: 'owner',
+        history: [],
+        userMessage: 'hello',
+      },
       fakeReg(JSON.stringify({ action: 'reply', reply: 'Hello! How can I help?' })),
     );
     expect(turn.replyText).toBe('Hello! How can I help?');
@@ -74,7 +83,14 @@ describe('runCopilotTurn', () => {
 
   it('unparseable planner output → safe fallback reply, no tool', async () => {
     const turn = await runCopilotTurn(
-      { db: throwingDb, organizationId: 'org', history: [], userMessage: 'hi' },
+      {
+        db: throwingDb,
+        organizationId: 'org',
+        userId: 'u',
+        role: 'owner',
+        history: [],
+        userMessage: 'hi',
+      },
       fakeReg('not json at all'),
     );
     expect(turn.toolCall).toBeUndefined();
@@ -84,7 +100,14 @@ describe('runCopilotTurn', () => {
   it('invalid tool args → handler is SKIPPED (db untouched), error fed to responder', async () => {
     // list_leads requires entityType; omit it → argsSchema fails → tool.run never called.
     const turn = await runCopilotTurn(
-      { db: throwingDb, organizationId: 'org', history: [], userMessage: 'list my leads' },
+      {
+        db: throwingDb,
+        organizationId: 'org',
+        userId: 'u',
+        role: 'owner',
+        history: [],
+        userMessage: 'list my leads',
+      },
       fakeReg(JSON.stringify({ action: 'tool', tool: 'list_leads', args: '{}' })),
     );
     expect(turn.toolCall?.name).toBe('list_leads');

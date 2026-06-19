@@ -127,6 +127,8 @@ describe.skipIf(!ready)('Slice 4 live — copilot tools + tenant isolation', () 
     const turn = await runCopilotTurn({
       db: dbA,
       organizationId: a.orgId,
+      userId: a.userId,
+      role: 'owner',
       history: [],
       userMessage: 'Suggest ICP personas from my knowledge base.',
     });
@@ -166,6 +168,8 @@ describe.skipIf(!ready)('Slice 4 live — copilot tools + tenant isolation', () 
     const turn = await runCopilotTurn({
       db: dbB,
       organizationId: b.orgId,
+      userId: b.userId,
+      role: 'owner',
       history: [],
       userMessage: 'List my people leads.',
     });
