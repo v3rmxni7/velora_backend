@@ -88,3 +88,37 @@ export function requireRole(request: FastifyRequest, allowed: OrgRole[]): void {
     throw new AppError('Insufficient role', { code: 'forbidden', statusCode: 403 });
   }
 }
+
+/**
+ * Validate the Supabase JWT but do NOT require an org (4.13 — signup/provisioning). A brand-new
+ * signed-up user is authenticated but has no public.users row yet; `authenticate` would 403 them.
+ * This gate attaches only the user identity, so the provisioning routes can create their org row.
+ * Every other route keeps the org-requiring `authenticate`.
+ */
+export async function authenticateUser(request: FastifyRequest, reply: FastifyReply) {
+  const header = request.headers.authorization;
+  const token = header?.startsWith('Bearer ') ? header.slice('Bearer '.length) : undefined;
+  if (!token) {
+    return reply.code(401).send({ error: 'unauthorized', message: 'Missing bearer token' });
+  }
+  const anon = getSupabaseAnon();
+  if (!anon) {
+    return reply.code(503).send({ error: 'unavailable', message: 'Supabase is not configured' });
+  }
+  const { data, error } = await anon.auth.getUser(token);
+  if (error || !data.user) {
+    return reply.code(401).send({ error: 'unauthorized', message: 'Invalid or expired token' });
+  }
+  request.user = { id: data.user.id, email: data.user.email ?? undefined };
+}
+
+/** Assert `authenticateUser` ran; returns the JWT identity (no org). Throws AppError(401) otherwise. */
+export function requireUser(request: FastifyRequest): {
+  userId: string;
+  email: string | undefined;
+} {
+  if (!request.user) {
+    throw new AppError('Not authenticated', { code: 'unauthorized', statusCode: 401 });
+  }
+  return { userId: request.user.id, email: request.user.email };
+}

@@ -6,6 +6,7 @@ import { env } from '../config/env.js';
 import { AppError } from '../lib/errors.js';
 import { functions, inngest } from '../workers/inngest/index.js';
 import { analyticsRoute } from './routes/analytics.js';
+import { authRoute } from './routes/auth.js';
 import { autonomyRoute } from './routes/autonomy.js';
 import { billingRoute } from './routes/billing.js';
 import { campaignsRoute } from './routes/campaigns.js';
@@ -83,6 +84,9 @@ async function start(): Promise<void> {
   await app.register(complianceRoute);
   await app.register(analyticsRoute);
   await app.register(autonomyRoute);
+  // Self-serve signup / accept-invite — its own plugin (validates the JWT but tolerates an orgless
+  // user; never inherits the org-requiring `authenticate`).
+  await app.register(authRoute);
   // Encapsulated so its raw-body parser stays scoped to the webhook route only.
   await app.register(webhooksRoute);
   // PUBLIC pixel (no JWT) — a GET image beacon + the tracker script. Registered separately like the

@@ -41,6 +41,11 @@ const EnvSchema = z.object({
   // → DKIM stays honestly 'unknown' (never a fabricated 'pass'); SPF + DMARC verify regardless.
   DKIM_SELECTOR: z.string().optional(),
 
+  // Self-serve signup (Slice 4.13) — the welcome credit grant a new org receives on provisioning. A
+  // real credit_ledger row (reason 'signup_grant'); set to 0 to disable. Credits also accrue via the
+  // 14-quest onboarding (4.10).
+  SIGNUP_GRANT_CREDITS: z.coerce.number().int().nonnegative().default(200),
+
   // Website-visitor de-anon resolver (Slice 4.6) — 🔌 EXTERNAL, NOT connected. Absent → getResolver()
   // returns null and the website-visitor-monitor sweep is a no-op (visits recorded, never resolved;
   // People/Companies tabs honestly empty). Person-level resolution additionally requires a per-org
