@@ -156,9 +156,17 @@ policy would fail CI. The dashboard exposes **read + one-click PAUSE only**.
 **Procedure (per org, one at a time, deliberate):**
 
 1. Run the QA playbook (§8) end-to-end **in dry-run** and confirm every expected result.
-2. Confirm the sending substrate is configured: `SMARTLEAD_API_KEY` (+ webhook secret) and
-   `MILLIONVERIFIER_API_KEY` are set (the gate fails closed without verification).
-3. Flip the two flags via the Supabase SQL editor (or a service-role client):
+2. Confirm the sending substrate is configured: `SMARTLEAD_API_KEY` and `MILLIONVERIFIER_API_KEY`
+   are set (the gate fails closed without verification).
+3. **★ HARD PREREQUISITE — inbound webhook (audit F-RT4). Do NOT flip sending on until this is green.**
+   Set **`SMARTLEAD_WEBHOOK_SECRET`** *and* register the Smartlead webhook to POST
+   `https://<railway-origin>/webhooks/smartlead`. Runtime-verified: with the secret unset, the route
+   returns **`503 webhook_unconfigured` and drops every inbound event**. If you flip sending on without
+   this, you would send real email but **never process replies / bounces / unsubscribes** — which
+   silently disables **suppression-on-reply, halt-on-reply, and the bounce/complaint anomaly
+   circuit-breaker**. You would keep emailing people who already replied, unsubscribed, or hard-bounced.
+   Confirm a test webhook delivers (a `200`, not `503`) before proceeding.
+4. Flip the two flags via the Supabase SQL editor (or a service-role client):
 
    ```sql
    update public.organizations
