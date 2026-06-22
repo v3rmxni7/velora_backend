@@ -238,10 +238,17 @@ export const campaignsRoute: FastifyPluginAsync = async (app) => {
     return { data: ins.data };
   });
 
-  app.get('/campaigns/:id/enrollments', async (request) => {
+  app.get('/campaigns/:id/enrollments', async (request, reply) => {
     const { db } = requireAuth(request);
     const { id } = IdParam.parse(request.params);
     const { status } = EnrollmentQuery.parse(request.query);
+    // Ownership 404-guard (defense-in-depth, matching every sibling /campaigns/:id route): a campaign
+    // not visible to this org → 404, so isolation never rests on enrollments-table RLS alone (audit
+    // F-RT1; runtime-confirmed RLS already blocks the data, this restores the second layer + the
+    // consistent 404 instead of a 200 empty-list for a non-owned campaign).
+    const own = await db.from('campaigns').select('id').eq('id', id).maybeSingle();
+    if (own.error) throw own.error;
+    if (!own.data) return reply.code(404).send({ error: 'not_found' });
     let q = db.from('enrollments').select('*').eq('campaign_id', id);
     if (status) q = q.eq('status', status);
     const { data, error } = await q.order('created_at', { ascending: false });
