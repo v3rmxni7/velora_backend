@@ -47,6 +47,15 @@ app.setErrorHandler((err, request, reply) => {
     reply.code(err.statusCode).send({ error: err.code, message: err.message });
     return;
   }
+  // Framework-level errors (e.g. body over the limit → Fastify's 413) carry their own 4xx
+  // statusCode. Honor the STATUS so the client sees the correct code (413/415/…) instead of a
+  // misleading 500 — but send a SAFE generic code, never err.message, which for some upstream
+  // errors could echo internal detail (audit F-RT3).
+  const sc = (err as { statusCode?: number }).statusCode;
+  if (typeof sc === 'number' && sc >= 400 && sc < 500) {
+    reply.code(sc).send({ error: sc === 413 ? 'payload_too_large' : 'request_rejected' });
+    return;
+  }
   request.log.error(err);
   reply.code(500).send({ error: 'internal_error' });
 });

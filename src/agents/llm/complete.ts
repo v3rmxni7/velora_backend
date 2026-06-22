@@ -76,6 +76,16 @@ export async function complete(
       lastErr = err; // fall through to the next candidate (failover)
     }
   }
-  if (lastErr) throw lastErr;
+  if (lastErr) {
+    // Every candidate failed (provider 4xx/5xx, rate-limit, exhausted credits, timeout). Log the raw
+    // cause server-side for diagnosis, but surface a graceful 503 to the client instead of letting the
+    // raw provider error fall through to the generic 500 handler (audit F-RT2). The honest detail (e.g.
+    // "credit balance too low") stays in the logs and never reaches the API response.
+    console.error(`[llm] all candidates failed for task "${task}":`, lastErr);
+    throw new AppError('The AI service is temporarily unavailable. Please try again shortly.', {
+      code: 'ai_unavailable',
+      statusCode: 503,
+    });
+  }
   throw new AppError('No LLM provider configured', { code: 'llm_unconfigured', statusCode: 503 });
 }
