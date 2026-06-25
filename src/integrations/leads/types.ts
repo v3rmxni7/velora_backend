@@ -105,6 +105,10 @@ export interface LocalMatch {
 
 export interface LeadProvider {
   readonly name: string;
+  /** True for a REAL paid provider (Apollo/PDL): the find-leads route enforces the spend guardrail
+   *  (daily quota + credit balance) and debits a 'lead_search' credit per search. The seed fixture is
+   *  `false` — it never spends, so it is never quota-limited or debited. */
+  readonly metered: boolean;
   searchPeople(filters: PeopleFilters): Promise<PersonMatch[]>;
   searchCompanies(filters: CompanyFilters): Promise<CompanyMatch[]>;
   searchLocal(filters: LocalFilters): Promise<LocalMatch[]>;

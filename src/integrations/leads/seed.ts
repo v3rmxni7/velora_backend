@@ -16,6 +16,7 @@ const anyIncl = (hay: string, needles: string[]) => needles.some((n) => incl(hay
 export function createSeedProvider(): LeadProvider {
   return {
     name: 'seed',
+    metered: false, // the in-memory fixture never hits a paid API → never quota-limited or debited
 
     async searchPeople(f: PeopleFilters): Promise<PersonMatch[]> {
       return SEED_PEOPLE.filter((p) => {

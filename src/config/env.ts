@@ -29,6 +29,22 @@ export const EnvSchema = z
     // Scraping (Firecrawl) — KB ingestion, Phase 1 Slice 1.
     FIRECRAWL_API_KEY: z.string().optional(),
 
+    // Lead-data provider (lead-sourcing slice) — BYOK, the ONE real functional gap.
+    // LEAD_PROVIDER selects the find-leads source: 'seed' (default — the deterministic in-memory
+    // fixture, zero spend, CI-safe) or a REAL paid provider 'apollo'/'pdl'. A real provider is used
+    // ONLY when its key is also present; otherwise the seam falls back to 'seed' (honest-off, no
+    // crash). HARD spend guardrails apply to metered providers ONLY (the seed never spends):
+    //   • per-org + global DAILY SEARCH QUOTA (mirrors the send governor; counts 'lead_search' rows)
+    //   • credit ENFORCE before the paid call (insufficient credits → no call) + a 'lead_search' debit
+    //     after a successful call (LEAD_SEARCH_COST; default 1 — also makes the quota countable).
+    // 'apollo' is the README's primary provider (built). PDL is the documented fallback — same
+    // drop-in LeadProvider shape; add createPdlProvider + a 'pdl' enum value when wired.
+    LEAD_PROVIDER: z.enum(['seed', 'apollo']).default('seed'),
+    APOLLO_API_KEY: z.string().optional(),
+    LEAD_SEARCH_COST: z.coerce.number().int().nonnegative().default(1),
+    LEAD_DAILY_CAP_PER_ORG: z.coerce.number().int().nonnegative().default(25),
+    LEAD_DAILY_CAP_GLOBAL: z.coerce.number().int().nonnegative().default(100),
+
     // Sending substrate (Smartlead) — Phase 2. Read-only in Slice 2.1 (mailboxes + warmup);
     // write + webhook in 2.5. WEBHOOK_SECRET verifies inbound Smartlead webhook signatures.
     SMARTLEAD_API_KEY: z.string().optional(),
