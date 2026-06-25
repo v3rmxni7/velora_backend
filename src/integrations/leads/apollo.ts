@@ -33,31 +33,66 @@ const APOLLO_BASE = 'https://api.apollo.io/v1';
 // --- best-effort enum maps (Apollo's vocabulary → Velora's). Unknown → a safe non-fabricating
 // fallback. seniority/department are REQUIRED on a match, so they always resolve to a valid value. ---
 const SENIORITY_MAP: Record<string, Seniority> = {
-  owner: 'c_level', founder: 'c_level', c_suite: 'c_level', c_level: 'c_level',
-  partner: 'vp', vp: 'vp', head: 'director', director: 'director', manager: 'manager',
-  senior: 'senior', entry: 'entry', intern: 'entry',
+  owner: 'c_level',
+  founder: 'c_level',
+  c_suite: 'c_level',
+  c_level: 'c_level',
+  partner: 'vp',
+  vp: 'vp',
+  head: 'director',
+  director: 'director',
+  manager: 'manager',
+  senior: 'senior',
+  entry: 'entry',
+  intern: 'entry',
 };
 const DEPARTMENT_MAP: Record<string, Department> = {
-  engineering: 'engineering', information_technology: 'engineering',
-  sales: 'sales', business_development: 'sales', marketing: 'marketing',
-  product: 'product', product_management: 'product', finance: 'finance', accounting: 'finance',
-  operations: 'operations', human_resources: 'hr', legal: 'legal',
-  support: 'support', customer_service: 'support',
+  engineering: 'engineering',
+  information_technology: 'engineering',
+  sales: 'sales',
+  business_development: 'sales',
+  marketing: 'marketing',
+  product: 'product',
+  product_management: 'product',
+  finance: 'finance',
+  accounting: 'finance',
+  operations: 'operations',
+  human_resources: 'hr',
+  legal: 'legal',
+  support: 'support',
+  customer_service: 'support',
 };
 const INDUSTRY_MAP: Record<string, Industry> = {
-  'information technology & services': 'saas', 'computer software': 'saas', saas: 'saas',
-  'financial services': 'fintech', fintech: 'fintech', banking: 'fintech',
-  'hospital & health care': 'healthcare', healthcare: 'healthcare',
-  'consumer goods': 'ecommerce', retail: 'ecommerce', ecommerce: 'ecommerce',
-  manufacturing: 'manufacturing', 'marketing & advertising': 'agency', agency: 'agency',
-  education: 'edtech', edtech: 'edtech', biotechnology: 'biotech', biotech: 'biotech',
-  logistics: 'logistics', 'logistics & supply chain': 'logistics',
-  'real estate': 'real_estate', real_estate: 'real_estate',
+  'information technology & services': 'saas',
+  'computer software': 'saas',
+  saas: 'saas',
+  'financial services': 'fintech',
+  fintech: 'fintech',
+  banking: 'fintech',
+  'hospital & health care': 'healthcare',
+  healthcare: 'healthcare',
+  'consumer goods': 'ecommerce',
+  retail: 'ecommerce',
+  ecommerce: 'ecommerce',
+  manufacturing: 'manufacturing',
+  'marketing & advertising': 'agency',
+  agency: 'agency',
+  education: 'edtech',
+  edtech: 'edtech',
+  biotechnology: 'biotech',
+  biotech: 'biotech',
+  logistics: 'logistics',
+  'logistics & supply chain': 'logistics',
+  'real estate': 'real_estate',
+  real_estate: 'real_estate',
 };
 
-const mapSeniority = (s?: string | null): Seniority => SENIORITY_MAP[(s ?? '').toLowerCase()] ?? 'mid';
-const mapDepartment = (d?: string | null): Department => DEPARTMENT_MAP[(d ?? '').toLowerCase()] ?? 'other';
-const mapIndustry = (i?: string | null): Industry | undefined => INDUSTRY_MAP[(i ?? '').toLowerCase()];
+const mapSeniority = (s?: string | null): Seniority =>
+  SENIORITY_MAP[(s ?? '').toLowerCase()] ?? 'mid';
+const mapDepartment = (d?: string | null): Department =>
+  DEPARTMENT_MAP[(d ?? '').toLowerCase()] ?? 'other';
+const mapIndustry = (i?: string | null): Industry | undefined =>
+  INDUSTRY_MAP[(i ?? '').toLowerCase()];
 
 /** Apollo employee-count band string for a search filter, e.g. "51-200" → "51,200". */
 function sizeToRange(size?: SizeBand): string | undefined {
@@ -177,7 +212,9 @@ export function createApolloProvider(apiKey: string): LeadProvider {
         ...(f.seniorities?.length ? { person_seniorities: f.seniorities } : {}),
         ...(f.departments?.length ? { person_departments: f.departments } : {}),
         ...(f.locations?.length ? { person_locations: f.locations } : {}),
-        ...(f.companySize ? { organization_num_employees_ranges: [sizeToRange(f.companySize)] } : {}),
+        ...(f.companySize
+          ? { organization_num_employees_ranges: [sizeToRange(f.companySize)] }
+          : {}),
         ...(f.keywords?.length ? { q_keywords: f.keywords.join(' ') } : {}),
       };
       const data = parse(PeopleResponse, await call('/mixed_people/search', body));
@@ -219,15 +256,17 @@ export function createApolloProvider(apiKey: string): LeadProvider {
       };
       const data = parse(CompaniesResponse, await call('/mixed_companies/search', body));
       const orgs = data.organizations.length ? data.organizations : (data.accounts ?? []);
-      return orgs.map((o): CompanyMatch => ({
-        externalId: `apollo:${o.id ?? o.name ?? ''}`,
-        name: o.name ?? '',
-        domain: o.primary_domain ?? o.website_url ?? undefined,
-        industry: mapIndustry(o.industry) ?? 'saas',
-        sizeBand: countToBand(o.estimated_num_employees) ?? '11-50',
-        employeeCount: o.estimated_num_employees ?? undefined,
-        linkedinUrl: o.linkedin_url ?? undefined,
-      }));
+      return orgs.map(
+        (o): CompanyMatch => ({
+          externalId: `apollo:${o.id ?? o.name ?? ''}`,
+          name: o.name ?? '',
+          domain: o.primary_domain ?? o.website_url ?? undefined,
+          industry: mapIndustry(o.industry) ?? 'saas',
+          sizeBand: countToBand(o.estimated_num_employees) ?? '11-50',
+          employeeCount: o.estimated_num_employees ?? undefined,
+          linkedinUrl: o.linkedin_url ?? undefined,
+        }),
+      );
     },
 
     // Apollo is not a local-business directory — honest empty rather than a fabricated result.

@@ -93,25 +93,33 @@ describe('Apollo adapter — maps real results + fails safe (mocked fetch)', () 
       companyExternalId: 'apollo:o1',
     });
     // The locked-email lead is returned WITHOUT a fabricated address.
-    expect(results[1].email).toBeUndefined();
+    expect(results[1]?.email).toBeUndefined();
   });
 
   it('throws (never fabricates) on a non-2xx provider response', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 429, json: async () => ({}) }));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: false, status: 429, json: async () => ({}) }),
+    );
     const provider = createApolloProvider('test-key');
     await expect(provider.searchPeople(filters)).rejects.toMatchObject({ code: 'apollo_error' });
   });
 
   it('throws (never fabricates) on an unexpected response shape', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ people: 'not-an-array' }) }));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: true, json: async () => ({ people: 'not-an-array' }) }),
+    );
     const provider = createApolloProvider('test-key');
-    await expect(provider.searchPeople(filters)).rejects.toMatchObject({ code: 'apollo_bad_response' });
+    await expect(provider.searchPeople(filters)).rejects.toMatchObject({
+      code: 'apollo_bad_response',
+    });
   });
 
   it('returns an honest empty list for local-business search (Apollo has no local data)', async () => {
     vi.stubGlobal('fetch', vi.fn());
     const provider = createApolloProvider('test-key');
     expect(await provider.searchLocal({ limit: 10 })).toEqual([]);
-    expect((globalThis.fetch as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+    expect(globalThis.fetch as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
   });
 });
