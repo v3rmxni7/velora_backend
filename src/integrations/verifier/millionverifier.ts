@@ -3,6 +3,9 @@ import { AppError } from '../../lib/errors.js';
 import type { EmailVerifier, Verdict, VerificationResult } from './types.js';
 
 const ENDPOINT = 'https://api.millionverifier.com/api/v3/';
+// Client-side fetch timeout just ABOVE MillionVerifier's own 20s server budget (the ?timeout=20 query
+// param is server-side, not a client abort). A silent socket aborts → honest 502 (audit: resilience/low).
+const VERIFIER_TIMEOUT_MS = 25_000;
 
 // 'ok' → deliverable; invalid/disposable → undeliverable (never send); everything else
 // (catch_all/unknown/error/unexpected) → risky → proceed, flagged (catch-all is common for B2B;
@@ -40,8 +43,19 @@ export function createMillionVerifier(): EmailVerifier | null {
       const url = new URL(ENDPOINT);
       url.searchParams.set('api', apiKey);
       url.searchParams.set('email', email);
-      url.searchParams.set('timeout', '20');
-      const res = await fetch(url, { headers: { accept: 'application/json' } });
+      url.searchParams.set('timeout', '20'); // MillionVerifier's SERVER-side budget — NOT a client abort
+      let res: Response;
+      try {
+        res = await fetch(url, {
+          headers: { accept: 'application/json' },
+          signal: AbortSignal.timeout(VERIFIER_TIMEOUT_MS),
+        });
+      } catch {
+        throw new AppError('MillionVerifier is unreachable', {
+          code: 'verifier_error',
+          statusCode: 502,
+        });
+      }
       if (!res.ok) {
         throw new AppError(`MillionVerifier request failed (${res.status})`, {
           code: 'verifier_error',
