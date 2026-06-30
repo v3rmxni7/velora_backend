@@ -47,37 +47,35 @@ describe('Apollo adapter — maps real results + fails safe (mocked fetch)', () 
   afterEach(() => vi.unstubAllGlobals());
 
   it('maps people, keeps real emails, and DROPS Apollo locked/placeholder emails', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          people: [
-            {
-              id: '1',
-              first_name: 'Ada',
-              last_name: 'Lovelace',
-              name: 'Ada Lovelace',
-              title: 'CTO',
-              email: 'ada@acme.com',
-              seniority: 'c_suite',
-              departments: ['engineering'],
-              city: 'San Francisco',
-              state: 'CA',
-              country: 'US',
-              linkedin_url: 'https://linkedin.com/in/ada',
-              organization: {
-                id: 'o1',
-                name: 'Acme',
-                industry: 'computer software',
-                estimated_num_employees: 150,
-              },
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        people: [
+          {
+            id: '1',
+            first_name: 'Ada',
+            last_name: 'Lovelace',
+            name: 'Ada Lovelace',
+            title: 'CTO',
+            email: 'ada@acme.com',
+            seniority: 'c_suite',
+            departments: ['engineering'],
+            city: 'San Francisco',
+            state: 'CA',
+            country: 'US',
+            linkedin_url: 'https://linkedin.com/in/ada',
+            organization: {
+              id: 'o1',
+              name: 'Acme',
+              industry: 'computer software',
+              estimated_num_employees: 150,
             },
-            { id: '2', name: 'Locked Lead', email: 'email_not_unlocked@domain.com' },
-          ],
-        }),
+          },
+          { id: '2', name: 'Locked Lead', email: 'email_not_unlocked@domain.com' },
+        ],
       }),
-    );
+    });
+    vi.stubGlobal('fetch', fetchMock);
     const provider = createApolloProvider('test-key');
     const results = await provider.searchPeople(filters);
     expect(results).toHaveLength(2);
@@ -94,15 +92,54 @@ describe('Apollo adapter — maps real results + fails safe (mocked fetch)', () 
     });
     // The locked-email lead is returned WITHOUT a fabricated address.
     expect(results[1]?.email).toBeUndefined();
+
+    // Request shape (verified live 2026-06-30): POST to /api/v1, filters in the QUERY STRING
+    // (arrays as key[]), the api key on BOTH X-Api-Key and Authorization: Bearer.
+    const [reqUrl, reqInit] = fetchMock.mock.calls[0] ?? [];
+    const url = new URL(String(reqUrl));
+    expect(url.pathname).toBe('/api/v1/mixed_people/search');
+    expect(url.searchParams.getAll('person_titles[]')).toEqual(['cto']);
+    expect(url.searchParams.get('page')).toBe('1');
+    expect(url.searchParams.get('per_page')).toBe('10');
+    const headers = (reqInit?.headers ?? {}) as Record<string, string>;
+    expect(reqInit?.method).toBe('POST');
+    expect(headers['X-Api-Key']).toBe('test-key');
+    expect(headers.Authorization).toBe('Bearer test-key');
   });
 
-  it('throws (never fabricates) on a non-2xx provider response', async () => {
+  it('throws (never fabricates) on a non-2xx response, surfacing Apollo’s own error body', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockResolvedValue({ ok: false, status: 429, json: async () => ({}) }),
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 422,
+        text: async () => '{"error":"Not allowed"}',
+        json: async () => ({}),
+      }),
     );
     const provider = createApolloProvider('test-key');
-    await expect(provider.searchPeople(filters)).rejects.toMatchObject({ code: 'apollo_error' });
+    await expect(provider.searchPeople(filters)).rejects.toMatchObject({
+      code: 'apollo_error',
+      // the thrown message carries Apollo's verbatim complaint, so a live failure is self-diagnosing
+      message: expect.stringContaining('Not allowed'),
+    });
+  });
+
+  it('maps 429 to a 429 (rate-limited), not a generic 502', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 429,
+        text: async () => 'rate limited',
+        json: async () => ({}),
+      }),
+    );
+    const provider = createApolloProvider('test-key');
+    await expect(provider.searchPeople(filters)).rejects.toMatchObject({
+      code: 'apollo_error',
+      statusCode: 429,
+    });
   });
 
   it('throws (never fabricates) on an unexpected response shape', async () => {

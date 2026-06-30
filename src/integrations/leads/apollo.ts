@@ -16,19 +16,23 @@ import type {
 
 // Apollo.io lead-data adapter (the README's primary provider). Drop-in for the LeadProvider seam.
 //
-// ⚠️ LIVE-VERIFICATION NOTE: this maps Velora's filters/results to Apollo's documented v1 REST API
-// (mixed_people/search, mixed_companies/search), but the exact request params and response field
-// names can only be end-to-end verified with a live APOLLO_API_KEY (the one piece that can't be tested
-// without spending). It is built to FAIL SAFE, never to fabricate:
+// REQUEST SHAPE (verified live 2026-06-30 against a real key): Apollo's search endpoints take their
+// filters as URL QUERY-STRING params (arrays as `key[]=v`), NOT a JSON body — sending them in the body
+// returns a 422. Base is `/api/v1`; auth is sent BOTH as `X-Api-Key` and `Authorization: Bearer`
+// (Apollo accepts either across plan/endpoint variants — belt-and-suspenders, harmless). people →
+// `mixed_people/search` (the live key authenticates here; it returns locked emails which we DROP),
+// companies → `mixed_companies/search`.
+// It is built to FAIL SAFE, never to fabricate:
 //   • Responses are zod-parsed leniently; an unexpected shape throws a 502 'apollo_bad_response' (the
 //     route surfaces an honest error) — it NEVER invents leads.
 //   • Locked / placeholder emails (Apollo returns these until a paid "reveal") are dropped, so a
 //     PersonMatch only ever carries a real address.
-//   • A non-2xx provider response throws 'apollo_error' with the status — no silent empty list.
+//   • A non-2xx provider response throws 'apollo_error' WITH Apollo's own error body — no silent empty
+//     list, and a real failure is self-diagnosing rather than opaque.
 // Spend is contained UPSTREAM by the find-leads route's guardrail (daily quota + credit enforce);
 // this adapter performs exactly one search call per invocation.
 
-const APOLLO_BASE = 'https://api.apollo.io/v1';
+const APOLLO_BASE = 'https://api.apollo.io/api/v1';
 
 // --- best-effort enum maps (Apollo's vocabulary → Velora's). Unknown → a safe non-fabricating
 // fallback. seniority/department are REQUIRED on a match, so they always resolve to a valid value. ---
@@ -160,18 +164,30 @@ const CompaniesResponse = z
   })
   .passthrough();
 
+// Apollo search params: filters live in the QUERY STRING; arrays repeat as `key[]=v`.
+type ApolloParams = Record<string, string | string[] | undefined>;
+function buildSearchUrl(path: string, params: ApolloParams): URL {
+  const u = new URL(`${APOLLO_BASE}${path}`);
+  for (const [k, v] of Object.entries(params)) {
+    if (v == null) continue;
+    if (Array.isArray(v)) for (const item of v) u.searchParams.append(`${k}[]`, item);
+    else u.searchParams.set(k, v);
+  }
+  return u;
+}
+
 export function createApolloProvider(apiKey: string): LeadProvider {
-  async function call(path: string, body: Record<string, unknown>): Promise<unknown> {
+  async function call(path: string, params: ApolloParams): Promise<unknown> {
     let res: Response;
     try {
-      res = await fetch(`${APOLLO_BASE}${path}`, {
+      res = await fetch(buildSearchUrl(path, params), {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
+          accept: 'application/json',
+          // Apollo accepts either form across plans/endpoints; send both to be robust.
           'X-Api-Key': apiKey,
+          Authorization: `Bearer ${apiKey}`,
         },
-        body: JSON.stringify(body),
       });
     } catch {
       throw new AppError('Lead provider (Apollo) is unreachable', {
@@ -180,10 +196,20 @@ export function createApolloProvider(apiKey: string): LeadProvider {
       });
     }
     if (!res.ok) {
-      throw new AppError(`Lead provider (Apollo) returned ${res.status}`, {
-        code: 'apollo_error',
-        statusCode: res.status === 429 ? 429 : 502,
-      });
+      // Surface Apollo's own error body (truncated) — honest + self-diagnosing, never a guessed result.
+      let detail = '';
+      try {
+        detail = (await res.text()).slice(0, 300);
+      } catch {
+        /* ignore body read failure */
+      }
+      throw new AppError(
+        `Lead provider (Apollo) returned ${res.status}${detail ? `: ${detail}` : ''}`,
+        {
+          code: 'apollo_error',
+          statusCode: res.status === 429 ? 429 : 502,
+        },
+      );
     }
     return res.json();
   }
@@ -205,19 +231,18 @@ export function createApolloProvider(apiKey: string): LeadProvider {
     metered: true,
 
     async searchPeople(f: PeopleFilters): Promise<PersonMatch[]> {
-      const body = {
-        page: 1,
-        per_page: clampLimit(f.limit),
+      const sizeRange = f.companySize ? sizeToRange(f.companySize) : undefined;
+      const params: ApolloParams = {
+        page: '1',
+        per_page: String(clampLimit(f.limit)),
         ...(f.titleKeywords?.length ? { person_titles: f.titleKeywords } : {}),
         ...(f.seniorities?.length ? { person_seniorities: f.seniorities } : {}),
         ...(f.departments?.length ? { person_departments: f.departments } : {}),
         ...(f.locations?.length ? { person_locations: f.locations } : {}),
-        ...(f.companySize
-          ? { organization_num_employees_ranges: [sizeToRange(f.companySize)] }
-          : {}),
+        ...(sizeRange ? { organization_num_employees_ranges: [sizeRange] } : {}),
         ...(f.keywords?.length ? { q_keywords: f.keywords.join(' ') } : {}),
       };
-      const data = parse(PeopleResponse, await call('/mixed_people/search', body));
+      const data = parse(PeopleResponse, await call('/mixed_people/search', params));
       return data.people.map((p): PersonMatch => {
         const org = p.organization ?? undefined;
         const full = p.name ?? `${p.first_name ?? ''} ${p.last_name ?? ''}`.trim();
@@ -246,15 +271,16 @@ export function createApolloProvider(apiKey: string): LeadProvider {
     },
 
     async searchCompanies(f: CompanyFilters): Promise<CompanyMatch[]> {
-      const body = {
-        page: 1,
-        per_page: clampLimit(f.limit),
+      const sizeRange = f.size ? sizeToRange(f.size) : undefined;
+      const params: ApolloParams = {
+        page: '1',
+        per_page: String(clampLimit(f.limit)),
         ...(f.nameKeywords?.length ? { q_organization_name: f.nameKeywords.join(' ') } : {}),
         ...(f.locations?.length ? { organization_locations: f.locations } : {}),
-        ...(f.size ? { organization_num_employees_ranges: [sizeToRange(f.size)] } : {}),
+        ...(sizeRange ? { organization_num_employees_ranges: [sizeRange] } : {}),
         ...(f.keywords?.length ? { q_organization_keyword_tags: f.keywords } : {}),
       };
-      const data = parse(CompaniesResponse, await call('/mixed_companies/search', body));
+      const data = parse(CompaniesResponse, await call('/mixed_companies/search', params));
       const orgs = data.organizations.length ? data.organizations : (data.accounts ?? []);
       return orgs.map(
         (o): CompanyMatch => ({
