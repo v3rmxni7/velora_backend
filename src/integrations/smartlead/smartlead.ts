@@ -15,6 +15,12 @@ export function normalizeAccountsResponse(body: unknown): SmartleadEmailAccount[
   return Array.isArray(arr) ? (arr as SmartleadEmailAccount[]) : [];
 }
 
+// Bound a hung-but-not-down Smartlead. undici fetch has no default timeout; on a silent socket the
+// abort rejects → caught → honest 502 smartlead_error. On the live cold-send push (executeSend → addLead)
+// this routes a hang into the existing send_push_failed path rather than leaving the enrollment stuck
+// 'queued' forever — the claim-before-push row still gates against any double-send. Audit: resilience/low.
+const SMARTLEAD_TIMEOUT_MS = 20_000;
+
 // Smartlead client (mirrors the scraper/embeddings adapter pattern): factory that validates the
 // key, uses global fetch, passes ?api_key=, and throws AppError on misconfig/HTTP. Read methods
 // (2.1) + write methods (2.5). Injectable — tests pass a fake.
@@ -35,7 +41,15 @@ export function createSmartleadClient(): SmartleadClient {
     return u;
   }
   async function get(path: string, params: Record<string, string> = {}): Promise<unknown> {
-    const res = await fetch(url(path, params), { headers: { accept: 'application/json' } });
+    let res: Response;
+    try {
+      res = await fetch(url(path, params), {
+        headers: { accept: 'application/json' },
+        signal: AbortSignal.timeout(SMARTLEAD_TIMEOUT_MS),
+      });
+    } catch {
+      throw new AppError('Smartlead is unreachable', { code: 'smartlead_error', statusCode: 502 });
+    }
     if (!res.ok) {
       throw new AppError(`Smartlead request failed (${res.status})`, {
         code: 'smartlead_error',
@@ -45,11 +59,20 @@ export function createSmartleadClient(): SmartleadClient {
     return res.json();
   }
   async function send(method: 'POST' | 'PATCH', path: string, body: unknown): Promise<unknown> {
-    const res = await fetch(url(path), {
-      method,
-      headers: { accept: 'application/json', 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    });
+    let res: Response;
+    try {
+      res = await fetch(url(path), {
+        method,
+        headers: { accept: 'application/json', 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(SMARTLEAD_TIMEOUT_MS),
+      });
+    } catch {
+      throw new AppError(`Smartlead ${method} ${path} is unreachable`, {
+        code: 'smartlead_error',
+        statusCode: 502,
+      });
+    }
     if (!res.ok) {
       throw new AppError(`Smartlead ${method} ${path} failed (${res.status})`, {
         code: 'smartlead_error',
