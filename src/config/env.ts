@@ -21,6 +21,8 @@ export const EnvSchema = z
     // LLM providers (BYOK — used from Phase 1).
     ANTHROPIC_API_KEY: z.string().optional(),
     OPENAI_API_KEY: z.string().optional(),
+    // Reserved — the Google/Gemini provider is NOT yet registered (getRegistry wires only anthropic +
+    // deepseek); a gemini candidate fails over to deepseek/haiku. Setting this has no effect today.
     GOOGLE_API_KEY: z.string().optional(),
     // Cheap tier (Slice 3b) — DeepSeek via the OpenAI-compatible API.
     DEEPSEEK_API_KEY: z.string().optional(),

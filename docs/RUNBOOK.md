@@ -79,6 +79,8 @@ Absent → the named feature stays honestly off; the server still boots.
 | `FIRECRAWL_API_KEY` | KB web ingestion off. |
 | `SMARTLEAD_API_KEY` / `SMARTLEAD_API_URL` / `SMARTLEAD_WEBHOOK_SECRET` | No sending substrate / no inbound webhook verification. **Required before §7 go-live.** |
 | `MILLIONVERIFIER_API_KEY` | Email verification skipped (the send gate fails closed when it can't verify). |
+| `LEAD_PROVIDER` (default `seed`) / `APOLLO_API_KEY` | Lead sourcing stays on the free deterministic **seed** fixture (zero spend). Set `LEAD_PROVIDER=apollo` **and** `APOLLO_API_KEY` (BYOK) to source real leads via Apollo — metered. Forgetting the key can never silently charge (the seam falls back to seed). |
+| `LEAD_SEARCH_COST` (1) / `LEAD_DAILY_CAP_PER_ORG` (25) / `LEAD_DAILY_CAP_GLOBAL` (100) | Spend guardrail for metered lead search: 1 credit debited per successful search + a per-org & global daily search quota. Seed is never metered. |
 | `DKIM_SELECTOR` | DKIM stays honestly `unknown` (never a fabricated pass); SPF + DMARC still verify. |
 | `SIGNUP_GRANT_CREDITS` (default 200) | Welcome credit grant on new-org provisioning; set `0` to disable. |
 | `WEBSITE_VISITOR_RESOLVER_API_KEY` | De-anon resolver off (visits recorded, never resolved). |
