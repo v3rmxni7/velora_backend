@@ -94,7 +94,7 @@ describe('Apollo adapter — maps real results + fails safe (mocked fetch)', () 
     expect(results[1]?.email).toBeUndefined();
 
     // Request shape (verified live 2026-06-30): POST to /api/v1, filters in the QUERY STRING
-    // (arrays as key[]), the api key on BOTH X-Api-Key and Authorization: Bearer.
+    // (arrays as key[]), auth via X-Api-Key ONLY — NO Authorization: Bearer (that 401s on Apollo).
     const [reqUrl, reqInit] = fetchMock.mock.calls[0] ?? [];
     const url = new URL(String(reqUrl));
     expect(url.pathname).toBe('/api/v1/mixed_people/search');
@@ -104,7 +104,7 @@ describe('Apollo adapter — maps real results + fails safe (mocked fetch)', () 
     const headers = (reqInit?.headers ?? {}) as Record<string, string>;
     expect(reqInit?.method).toBe('POST');
     expect(headers['X-Api-Key']).toBe('test-key');
-    expect(headers.Authorization).toBe('Bearer test-key');
+    expect(headers.Authorization).toBeUndefined(); // NO Bearer — Apollo would 401 INVALID_ACCESS_TOKEN
   });
 
   it('throws (never fabricates) on a non-2xx response, surfacing Apollo’s own error body', async () => {

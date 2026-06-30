@@ -18,10 +18,10 @@ import type {
 //
 // REQUEST SHAPE (verified live 2026-06-30 against a real key): Apollo's search endpoints take their
 // filters as URL QUERY-STRING params (arrays as `key[]=v`), NOT a JSON body — sending them in the body
-// returns a 422. Base is `/api/v1`; auth is sent BOTH as `X-Api-Key` and `Authorization: Bearer`
-// (Apollo accepts either across plan/endpoint variants — belt-and-suspenders, harmless). people →
-// `mixed_people/search` (the live key authenticates here; it returns locked emails which we DROP),
-// companies → `mixed_companies/search`.
+// returns a 422. Base is `/api/v1`; auth is the `X-Api-Key` header ONLY — adding `Authorization:
+// Bearer` makes Apollo validate the key as an OAuth access token and 401 (INVALID_ACCESS_TOKEN) even
+// with X-Api-Key present. people → `mixed_people/search` (the live key authenticates here; it returns
+// locked emails which we DROP), companies → `mixed_companies/search`.
 // It is built to FAIL SAFE, never to fabricate:
 //   • Responses are zod-parsed leniently; an unexpected shape throws a 502 'apollo_bad_response' (the
 //     route surfaces an honest error) — it NEVER invents leads.
@@ -184,9 +184,10 @@ export function createApolloProvider(apiKey: string): LeadProvider {
         method: 'POST',
         headers: {
           accept: 'application/json',
-          // Apollo accepts either form across plans/endpoints; send both to be robust.
+          // Apollo API-key auth is the X-Api-Key header ONLY. Do NOT also send Authorization: Bearer —
+          // Apollo then tries to validate the key as an OAuth ACCESS TOKEN and rejects the request with
+          // 401 INVALID_ACCESS_TOKEN even though X-Api-Key is present (verified live 2026-06-30).
           'X-Api-Key': apiKey,
-          Authorization: `Bearer ${apiKey}`,
         },
       });
     } catch {
