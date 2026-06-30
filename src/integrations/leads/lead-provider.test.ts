@@ -97,7 +97,7 @@ describe('Apollo adapter — maps real results + fails safe (mocked fetch)', () 
     // (arrays as key[]), auth via X-Api-Key ONLY — NO Authorization: Bearer (that 401s on Apollo).
     const [reqUrl, reqInit] = fetchMock.mock.calls[0] ?? [];
     const url = new URL(String(reqUrl));
-    expect(url.pathname).toBe('/api/v1/mixed_people/search');
+    expect(url.pathname).toBe('/api/v1/mixed_people/api_search');
     expect(url.searchParams.getAll('person_titles[]')).toEqual(['cto']);
     expect(url.searchParams.get('page')).toBe('1');
     expect(url.searchParams.get('per_page')).toBe('10');

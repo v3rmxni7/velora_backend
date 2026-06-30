@@ -20,8 +20,9 @@ import type {
 // filters as URL QUERY-STRING params (arrays as `key[]=v`), NOT a JSON body — sending them in the body
 // returns a 422. Base is `/api/v1`; auth is the `X-Api-Key` header ONLY — adding `Authorization:
 // Bearer` makes Apollo validate the key as an OAuth access token and 401 (INVALID_ACCESS_TOKEN) even
-// with X-Api-Key present. people → `mixed_people/search` (the live key authenticates here; it returns
-// locked emails which we DROP), companies → `mixed_companies/search`.
+// with X-Api-Key present. people → `mixed_people/api_search` (the net-new prospecting endpoint;
+// `mixed_people/search` is DEPRECATED for API callers per Apollo's 422, and api_search does NOT return
+// emails — a lead carries no address until a later enrichment step), companies → `mixed_companies/search`.
 // It is built to FAIL SAFE, never to fabricate:
 //   • Responses are zod-parsed leniently; an unexpected shape throws a 502 'apollo_bad_response' (the
 //     route surfaces an honest error) — it NEVER invents leads.
@@ -243,7 +244,7 @@ export function createApolloProvider(apiKey: string): LeadProvider {
         ...(sizeRange ? { organization_num_employees_ranges: [sizeRange] } : {}),
         ...(f.keywords?.length ? { q_keywords: f.keywords.join(' ') } : {}),
       };
-      const data = parse(PeopleResponse, await call('/mixed_people/search', params));
+      const data = parse(PeopleResponse, await call('/mixed_people/api_search', params));
       return data.people.map((p): PersonMatch => {
         const org = p.organization ?? undefined;
         const full = p.name ?? `${p.first_name ?? ''} ${p.last_name ?? ''}`.trim();
