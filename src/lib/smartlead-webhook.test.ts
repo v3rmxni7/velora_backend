@@ -10,6 +10,11 @@ describe('verifySignature (HMAC-SHA256, constant-time)', () => {
   it('accepts a correct signature', () => {
     expect(verifySignature(body, good, secret)).toBe(true);
   });
+  it('accepts Smartlead’s raw-hex signature (no sha256= prefix)', () => {
+    const rawHex = createHmac('sha256', secret).update(body, 'utf8').digest('hex');
+    expect(verifySignature(body, rawHex, secret)).toBe(true);
+    expect(verifySignature(body, rawHex.toUpperCase(), secret)).toBe(true); // case-insensitive
+  });
   it('rejects a wrong signature', () => {
     expect(verifySignature(body, 'sha256=deadbeef', secret)).toBe(false);
   });

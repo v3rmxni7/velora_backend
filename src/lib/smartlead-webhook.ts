@@ -9,8 +9,16 @@ export function verifySignature(
   secret: string,
 ): boolean {
   if (!header) return false;
-  const expected = `sha256=${createHmac('sha256', secret).update(rawBody, 'utf8').digest('hex')}`;
-  const a = Buffer.from(header);
+  const expected = createHmac('sha256', secret).update(rawBody, 'utf8').digest('hex');
+  // Smartlead sends the raw lowercase hex HMAC-SHA256 digest in X-Smartlead-Signature (their own
+  // verification example uses `.hexdigest()` with no prefix). We tolerate an optional "sha256="
+  // prefix and casing too (other providers/versions include it) — this normalizes the ENVELOPE only;
+  // the HMAC itself must still match exactly, timing-safe.
+  const provided = header
+    .trim()
+    .replace(/^sha256=/i, '')
+    .toLowerCase();
+  const a = Buffer.from(provided);
   const b = Buffer.from(expected);
   if (a.length !== b.length) return false; // timingSafeEqual requires equal lengths
   return timingSafeEqual(a, b);
