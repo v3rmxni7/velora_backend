@@ -14,7 +14,8 @@ const Subscribe = z.object({ campaignId: z.uuid() });
 export const signalsRoute: FastifyPluginAsync = async (app) => {
   app.addHook('preHandler', authenticate);
 
-  // The shared catalog (all 11) + this org's subscription state per signal. signal_definitions is a
+  // The shared catalog (all 12 — 4 live + 8 coming-soon) + this org's subscription state per signal.
+  // No .limit() below, so every catalog row is returned regardless of this count. signal_definitions is a
   // read-to-authenticated shared table; signal_subscriptions is RLS-scoped to the caller's org.
   app.get('/signals', async (request) => {
     const { db } = requireAuth(request);

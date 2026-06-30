@@ -90,8 +90,10 @@ Absent → the named feature stays honestly off; the server still boots.
 
 ## 4. Database migrations
 
-The build does **not** apply migrations — run them explicitly against the prod DB. There are **27**
-migrations through `20260702000000_compliance.sql`. Every table carries RLS from its first migration.
+The build does **not** apply migrations — run them explicitly against the prod DB. There are **29**
+migrations through `20260704000000_lead_search_reason.sql` (the last two add the org-delete owner-guard
+exemption and the `lead_search` credit_ledger reason that live Apollo metering depends on). Every table
+carries RLS from its first migration.
 
 Non-interactive push (password from your env, **never** printed):
 
