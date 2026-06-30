@@ -34,6 +34,10 @@ import type {
 // this adapter performs exactly one search call per invocation.
 
 const APOLLO_BASE = 'https://api.apollo.io/api/v1';
+// Bound a hung-but-not-down Apollo. undici fetch has NO default total timeout, so an accepted-then-
+// silent socket would hang the SYNCHRONOUS /find-leads request forever. The abort rejects fetch →
+// caught → honest 502 apollo_unreachable (audit: resilience/med).
+const APOLLO_TIMEOUT_MS = 20_000;
 
 // --- best-effort enum maps (Apollo's vocabulary → Velora's). Unknown → a safe non-fabricating
 // fallback. seniority/department are REQUIRED on a match, so they always resolve to a valid value. ---
@@ -190,6 +194,7 @@ export function createApolloProvider(apiKey: string): LeadProvider {
           // 401 INVALID_ACCESS_TOKEN even though X-Api-Key is present (verified live 2026-06-30).
           'X-Api-Key': apiKey,
         },
+        signal: AbortSignal.timeout(APOLLO_TIMEOUT_MS),
       });
     } catch {
       throw new AppError('Lead provider (Apollo) is unreachable', {
