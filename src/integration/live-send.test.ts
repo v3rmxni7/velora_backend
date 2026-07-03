@@ -240,7 +240,7 @@ describe.skipIf(!ready)('Slice 2.5 live — LIVE send via fake Smartlead (zero r
   }, 90_000);
 
   it.skipIf(!env.SMARTLEAD_WEBHOOK_SECRET)(
-    'signed EMAIL_SENT webhook → message sent + enrollment sent; bad signature → 401',
+    'EMAIL_SENT webhook via URL token (production path) → message sent + enrollment sent; no proof → 401',
     async () => {
       const app = Fastify();
       await app.register(webhooksRoute);
@@ -253,6 +253,7 @@ describe.skipIf(!ready)('Slice 2.5 live — LIVE send via fake Smartlead (zero r
       });
       const sig = `sha256=${createHmac('sha256', secret).update(payload, 'utf8').digest('hex')}`;
 
+      // No valid proof → 401 (bad sig header alone no longer the only gate — still rejected).
       const bad = await app.inject({
         method: 'POST',
         url: '/webhooks/smartlead',
@@ -261,13 +262,23 @@ describe.skipIf(!ready)('Slice 2.5 live — LIVE send via fake Smartlead (zero r
       });
       expect(bad.statusCode).toBe(401);
 
+      // URL token — the path a real Smartlead registration uses (?token= in the webhook URL).
       const ok = await app.inject({
+        method: 'POST',
+        url: `/webhooks/smartlead?token=${encodeURIComponent(secret)}`,
+        headers: { 'content-type': 'application/json' },
+        payload,
+      });
+      expect(ok.statusCode).toBe(200);
+
+      // Legacy HMAC header still accepted (idempotent replay of the same event).
+      const okSig = await app.inject({
         method: 'POST',
         url: '/webhooks/smartlead',
         headers: { 'content-type': 'application/json', 'x-smartlead-signature': sig },
         payload,
       });
-      expect(ok.statusCode).toBe(200);
+      expect(okSig.statusCode).toBe(200);
       await app.close();
 
       const msg = await admin

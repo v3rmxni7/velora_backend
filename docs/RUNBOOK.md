@@ -77,7 +77,7 @@ Absent → the named feature stays honestly off; the server still boots.
 | `OPENAI_API_KEY` | KB embeddings disabled; dialer-brief KB block is skipped (honest `kbChunks=[]`, never a 500). |
 | `DEEPSEEK_API_KEY` (+ `DEEPSEEK_BASE_URL`) | Cheap-tier model unavailable. |
 | `FIRECRAWL_API_KEY` | KB web ingestion off. |
-| `SMARTLEAD_API_KEY` / `SMARTLEAD_API_URL` / `SMARTLEAD_WEBHOOK_SECRET` | No sending substrate / no inbound webhook verification. **Required before §7 go-live.** |
+| `SMARTLEAD_API_KEY` / `SMARTLEAD_API_URL` / `SMARTLEAD_WEBHOOK_SECRET` | No sending substrate / no inbound webhook verification. **Required before §7 go-live.** The webhook secret is the shared token for the `?token=` URL param (+ payload `secret_key` / legacy HMAC) — Smartlead does not sign deliveries; see §7.3. |
 | `MILLIONVERIFIER_API_KEY` | Email verification skipped (the send gate fails closed when it can't verify). |
 | `LEAD_PROVIDER` (default `seed`) / `APOLLO_API_KEY` | Lead sourcing stays on the free deterministic **seed** fixture (zero spend). Set `LEAD_PROVIDER=apollo` **and** `APOLLO_API_KEY` (BYOK) to source real leads via Apollo — metered. Forgetting the key can never silently charge (the seam falls back to seed). |
 | `LEAD_SEARCH_COST` (1) / `LEAD_DAILY_CAP_PER_ORG` (25) / `LEAD_DAILY_CAP_GLOBAL` (100) | Spend guardrail for metered lead search: 1 credit debited per successful search + a per-org & global daily search quota. Seed is never metered. |
@@ -163,13 +163,31 @@ policy would fail CI. The dashboard exposes **read + one-click PAUSE only**.
 2. Confirm the sending substrate is configured: `SMARTLEAD_API_KEY` and `MILLIONVERIFIER_API_KEY`
    are set (the gate fails closed without verification).
 3. **★ HARD PREREQUISITE — inbound webhook (audit F-RT4). Do NOT flip sending on until this is green.**
-   Set **`SMARTLEAD_WEBHOOK_SECRET`** *and* register the Smartlead webhook to POST
-   `https://<railway-origin>/webhooks/smartlead`. Runtime-verified: with the secret unset, the route
-   returns **`503 webhook_unconfigured` and drops every inbound event**. If you flip sending on without
-   this, you would send real email but **never process replies / bounces / unsubscribes** — which
-   silently disables **suppression-on-reply, halt-on-reply, and the bounce/complaint anomaly
-   circuit-breaker**. You would keep emailing people who already replied, unsubscribed, or hard-bounced.
-   Confirm a test webhook delivers (a `200`, not `503`) before proceeding.
+   Ground truth (deep-researched + Smartlead support, 2026-07): **Smartlead does not sign webhook
+   deliveries** — no HMAC signing secret exists anywhere in their UI or API (the `X-Smartlead-Signature`
+   header appears only in their docs site and is not provisioned/deliverable). Velora therefore accepts
+   ANY ONE of these authenticity proofs, all timing-safe against `SMARTLEAD_WEBHOOK_SECRET`:
+   a **`?token=` query parameter in the webhook URL** (the mechanism Smartlead support recommends —
+   use this), the **`secret_key` field** Smartlead echoes in payload bodies, or a valid HMAC header
+   (legacy, in case it ever ships). Fail-closed behavior is unchanged: secret unset → the route returns
+   **`503 webhook_unconfigured` and drops every inbound event**.
+
+   **Registration procedure:**
+   1. Set `SMARTLEAD_WEBHOOK_SECRET` on Railway to a long random value (e.g. `openssl rand -hex 32`).
+   2. In Smartlead → Settings → Webhooks → Add Webhook, set the URL to
+      `https://<railway-origin>/webhooks/smartlead?token=<that same value>` and select all event
+      types (at minimum: sent, reply, bounce, unsubscribe).
+   3. Fire Smartlead's test webhook and confirm a **`200`** (a `401` means the token in the URL doesn't
+      match the env var; a `503` means the env var isn't set). Note: Smartlead's "Send Test" uses a
+      generic payload not tied to a real campaign, so expect `{ok:true, handled:false}` — the 200 is
+      what proves auth; `handled:true` only occurs for events matching a real campaign/lead.
+
+   If you flip sending on without this, you would send real email but **never process replies /
+   bounces / unsubscribes** — which silently disables **suppression-on-reply, halt-on-reply, and the
+   bounce/complaint anomaly circuit-breaker**. You would keep emailing people who already replied,
+   unsubscribed, or hard-bounced. (Smartlead retries failed deliveries 1min/5min/30min, 3 attempts;
+   a 4xx is treated as permanent — so a mis-set token drops events until re-fired via their
+   Retrigger endpoint.)
 4. Flip the two flags via the Supabase SQL editor (or a service-role client):
 
    ```sql

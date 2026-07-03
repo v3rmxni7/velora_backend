@@ -48,7 +48,9 @@ export const EnvSchema = z
     LEAD_DAILY_CAP_GLOBAL: z.coerce.number().int().nonnegative().default(100),
 
     // Sending substrate (Smartlead) — Phase 2. Read-only in Slice 2.1 (mailboxes + warmup);
-    // write + webhook in 2.5. WEBHOOK_SECRET verifies inbound Smartlead webhook signatures.
+    // write + webhook in 2.5. WEBHOOK_SECRET authenticates inbound webhooks: Smartlead does not
+    // sign deliveries, so this is the shared token matched (timing-safe) against the registered
+    // URL's ?token= param / the payload's secret_key / a legacy HMAC header (RUNBOOK §7.3).
     SMARTLEAD_API_KEY: z.string().optional(),
     SMARTLEAD_API_URL: z.string().default('https://server.smartlead.ai/api/v1'),
     SMARTLEAD_WEBHOOK_SECRET: z.string().optional(),

@@ -4,6 +4,9 @@ import { getAutonomyMode, recordAutonomyEvent } from '../../lib/autonomy-mode.js
 import {
   COMPLAINT_EVENTS,
   eventToUpdate,
+  extractReplyBody,
+  extractReplyMessageId,
+  extractSentMessageId,
   type SmartleadEvent,
 } from '../../lib/smartlead-webhook.js';
 import { events, inngest } from '../../workers/inngest/client.js';
@@ -134,7 +137,8 @@ export async function applySmartleadEvent(
     const t = await resolveTarget(db, event);
     if (!t) return { handled: false };
     const msgUpdate: Record<string, unknown> = { status: update.status };
-    if (event.message_id) msgUpdate.smartlead_message_id = String(event.message_id);
+    const sentId = extractSentMessageId(event);
+    if (sentId) msgUpdate.smartlead_message_id = sentId;
     const m = await db
       .from('messages')
       .update(msgUpdate)
@@ -160,7 +164,8 @@ export async function applySmartleadEvent(
     // M5 — idempotent on the Smartlead message id. Pre-check the inbound message; if it already
     // exists (a replayed/duplicate webhook), this is a no-op — crucially we do NOT call the LLM
     // classifier again (no cost amplification on replays) and do not re-run the writes.
-    const dedupeKey = `reply:${t.org}:${t.enrollmentId}:${event.message_id ?? 'na'}`;
+    const replyMessageId = extractReplyMessageId(event);
+    const dedupeKey = `reply:${t.org}:${t.enrollmentId}:${replyMessageId ?? 'na'}`;
     const existing = await db
       .from('messages')
       .select('id')
@@ -171,7 +176,9 @@ export async function applySmartleadEvent(
     if (existing.data) return { handled: true };
 
     const classify = deps.classify ?? classifyReply;
-    const replyBody = event.reply_body ?? event.reply_message ?? event.body ?? '';
+    // Shape-safe across Smartlead's schema evolution: reply_body (deprecated string) →
+    // reply_message {message_id, html, text} (current object) — never an object into the classifier.
+    const replyBody = extractReplyBody(event);
     const category = await classify(replyBody);
 
     const insMsg = await db.from('messages').upsert(
@@ -185,7 +192,7 @@ export async function applySmartleadEvent(
         status: 'replied',
         category,
         // Store the inbound Smartlead message id — the thread reference a live reply (3.4) needs.
-        smartlead_message_id: event.message_id ? String(event.message_id) : null,
+        smartlead_message_id: replyMessageId,
         dedupe_key: dedupeKey,
       },
       { onConflict: 'organization_id,dedupe_key', ignoreDuplicates: true },
@@ -245,7 +252,7 @@ export async function applySmartleadEvent(
           organizationId: t.org,
           enrollmentId: t.enrollmentId,
           threadId: t.threadId,
-          inboundMessageId: String(event.message_id ?? 'na'),
+          inboundMessageId: replyMessageId ?? 'na',
           category,
         });
       } catch (err) {

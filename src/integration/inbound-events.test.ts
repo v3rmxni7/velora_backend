@@ -293,7 +293,7 @@ describe.skipIf(!ready)(
     });
 
     it.skipIf(!env.SMARTLEAD_WEBHOOK_SECRET)(
-      'signed EMAIL_BOUNCE webhook → message+enrollment bounced + suppression(bounce); bad signature → 401',
+      'EMAIL_BOUNCE webhook (any-of auth: url token / payload secret_key / legacy HMAC) → bounced + suppression; no proof → 401',
       async () => {
         const app = Fastify();
         await app.register(webhooksRoute);
@@ -306,6 +306,7 @@ describe.skipIf(!ready)(
         });
         const sig = `sha256=${createHmac('sha256', secret).update(payload, 'utf8').digest('hex')}`;
 
+        // No valid proof (bad sig, no token, no secret_key) → 401.
         const bad = await app.inject({
           method: 'POST',
           url: '/webhooks/smartlead',
@@ -313,14 +314,40 @@ describe.skipIf(!ready)(
           payload,
         });
         expect(bad.statusCode).toBe(401);
+        const badToken = await app.inject({
+          method: 'POST',
+          url: '/webhooks/smartlead?token=wrong',
+          headers: { 'content-type': 'application/json' },
+          payload,
+        });
+        expect(badToken.statusCode).toBe(401);
 
-        const ok = await app.inject({
+        // Proof 1 — URL token (the PRODUCTION path: Smartlead does not sign deliveries).
+        const okToken = await app.inject({
+          method: 'POST',
+          url: `/webhooks/smartlead?token=${encodeURIComponent(secret)}`,
+          headers: { 'content-type': 'application/json' },
+          payload,
+        });
+        expect(okToken.statusCode).toBe(200);
+
+        // Proof 2 — payload-body secret_key (Smartlead's documented mechanism). Idempotent replay.
+        const okSecretKey = await app.inject({
+          method: 'POST',
+          url: '/webhooks/smartlead',
+          headers: { 'content-type': 'application/json' },
+          payload: JSON.stringify({ ...JSON.parse(payload), secret_key: secret }),
+        });
+        expect(okSecretKey.statusCode).toBe(200);
+
+        // Proof 3 — legacy HMAC header (kept in case it ever really ships). Idempotent replay.
+        const okSig = await app.inject({
           method: 'POST',
           url: '/webhooks/smartlead',
           headers: { 'content-type': 'application/json', 'x-smartlead-signature': sig },
           payload,
         });
-        expect(ok.statusCode).toBe(200);
+        expect(okSig.statusCode).toBe(200);
         await app.close();
 
         const m = await admin
