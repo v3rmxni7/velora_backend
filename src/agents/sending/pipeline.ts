@@ -9,6 +9,7 @@ import { AppError } from '../../lib/errors.js';
 import { assertLiveSendAllowed, getSendingMode } from '../../lib/sending-mode.js';
 import type { GenerateDeps, LeadType } from '../draft/generate.js';
 import { runDraftGeneration } from '../draft/task.js';
+import { enrichPersonLead } from '../leads/enrich.js';
 import { bestEffortSendDebit } from './credit-debit.js';
 import { ensureSmartleadCampaign } from './provision.js';
 
@@ -128,7 +129,13 @@ export async function isSenderActive(db: SupabaseClient, campaignId: string): Pr
   return sender.data?.status === 'active';
 }
 
-export type PrepareOutcome = 'prepared' | 'suppressed' | 'undeliverable' | 'no_email' | 'skipped';
+export type PrepareOutcome =
+  | 'prepared'
+  | 'suppressed'
+  | 'undeliverable'
+  | 'no_email'
+  | 'enrich_deferred'
+  | 'skipped';
 
 /** Phase 1: gate a pending enrollment, then generate the grounded draft + approval task. */
 export async function prepareEnrollment(
@@ -136,11 +143,28 @@ export async function prepareEnrollment(
   enrollment: EnrollmentRecord,
   deps: GenerateDeps = {},
   verifier: EmailVerifier | null = createMillionVerifier(),
+  enrich: typeof enrichPersonLead = enrichPersonLead,
 ): Promise<{ outcome: PrepareOutcome; taskId?: string }> {
   if (enrollment.status !== 'pending') return { outcome: 'skipped' };
   const org = enrollment.organization_id;
 
-  const email = await leadEmail(db, enrollment.lead_type, enrollment.lead_id);
+  let email = await leadEmail(db, enrollment.lead_type, enrollment.lead_id);
+  if (!email && enrollment.lead_type === 'person') {
+    // Enrichment seam (Slice E3): search results carry no address (Apollo api_search omits emails
+    // by design) — try the guarded enrichment before failing the enrollment. Quota / balance
+    // shortfalls DEFER (enrollment stays 'pending', visible + retryable on the next executor run)
+    // rather than terminally fail; only a genuine provider no-match falls through to no_email.
+    const enriched = await enrich(db, enrollment.lead_id);
+    if (enriched.outcome === 'enriched' || enriched.outcome === 'already') {
+      email = enriched.email ?? null;
+    } else if (enriched.outcome === 'quota' || enriched.outcome === 'insufficient_credit') {
+      await db
+        .from('enrollments')
+        .update({ error: `enrich_${enriched.outcome}` })
+        .eq('id', enrollment.id);
+      return { outcome: 'enrich_deferred' };
+    }
+  }
   if (!email) {
     await db
       .from('enrollments')
