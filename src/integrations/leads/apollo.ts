@@ -96,6 +96,24 @@ const INDUSTRY_MAP: Record<string, Industry> = {
   real_estate: 'real_estate',
 };
 
+// FORWARD map (Velora vocabulary → Apollo's person_seniorities enum). Apollo AND-matches every
+// filter against its OWN controlled vocabulary (owner/founder/c_suite/partner/vp/head/director/
+// manager/senior/entry/intern); passing Velora values like 'c_level' or 'mid' raw matches ZERO
+// people — which is why a "founders / c-level" search returned nothing. Expand each Velora tier to
+// the Apollo values it covers (person_seniorities is an array, so one tier → several Apollo values).
+const SENIORITY_TO_APOLLO: Record<string, string[]> = {
+  c_level: ['c_suite', 'founder', 'owner', 'partner'],
+  vp: ['vp'],
+  director: ['director', 'head'],
+  manager: ['manager'],
+  senior: ['senior'],
+  mid: ['senior'], // Apollo has no mid tier; senior is the closest IC band
+  entry: ['entry', 'intern'],
+};
+const toApolloSeniorities = (xs: readonly string[]): string[] => [
+  ...new Set(xs.flatMap((s) => SENIORITY_TO_APOLLO[s.toLowerCase()] ?? [])),
+];
+
 const mapSeniority = (s?: string | null): Seniority =>
   SENIORITY_MAP[(s ?? '').toLowerCase()] ?? 'mid';
 const mapDepartment = (d?: string | null): Department =>
@@ -243,7 +261,7 @@ export function createApolloProvider(apiKey: string): LeadProvider {
         page: '1',
         per_page: String(clampLimit(f.limit)),
         ...(f.titleKeywords?.length ? { person_titles: f.titleKeywords } : {}),
-        ...(f.seniorities?.length ? { person_seniorities: f.seniorities } : {}),
+        ...(f.seniorities?.length ? { person_seniorities: toApolloSeniorities(f.seniorities) } : {}),
         ...(f.departments?.length ? { person_departments: f.departments } : {}),
         ...(f.locations?.length ? { person_locations: f.locations } : {}),
         ...(sizeRange ? { organization_num_employees_ranges: [sizeRange] } : {}),
