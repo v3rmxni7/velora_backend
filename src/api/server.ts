@@ -66,7 +66,13 @@ async function start(): Promise<void> {
   const corsOrigin = env.CORS_ORIGIN.includes(',')
     ? env.CORS_ORIGIN.split(',').map((s) => s.trim())
     : env.CORS_ORIGIN;
-  await app.register(cors, { origin: corsOrigin });
+  // @fastify/cors v11 narrowed the default Access-Control-Allow-Methods to GET,HEAD,POST, which
+  // makes the browser block every PATCH/PUT/DELETE preflight (mailbox assign/set-primary, sender
+  // update, list/ICP/proof/coaching edits, team role changes). Enumerate the methods the API serves.
+  await app.register(cors, {
+    origin: corsOrigin,
+    methods: ['GET', 'HEAD', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
+  });
   await app.register(healthRoute);
   await app.register(kbRoute);
   await app.register(coachingPointsRoute);
