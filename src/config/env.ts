@@ -47,6 +47,15 @@ export const EnvSchema = z
     LEAD_DAILY_CAP_PER_ORG: z.coerce.number().int().nonnegative().default(25),
     LEAD_DAILY_CAP_GLOBAL: z.coerce.number().int().nonnegative().default(100),
 
+    // Lead ENRICHMENT (on-enroll email reveal via the provider's match endpoint — Apollo charges its
+    // own export credit per revealed email). Same two-ceiling discipline as search: per-org + global
+    // DAILY quota counted on credit_ledger reason='enrichment' rows, credit ENFORCE before the paid
+    // call, debit (ENRICH_COST) only AFTER a usable email is obtained — a failed/no-match enrichment
+    // costs nothing on our meter. Runaway spend is structurally impossible.
+    ENRICH_COST: z.coerce.number().int().nonnegative().default(1),
+    ENRICH_DAILY_CAP_PER_ORG: z.coerce.number().int().nonnegative().default(100),
+    ENRICH_DAILY_CAP_GLOBAL: z.coerce.number().int().nonnegative().default(500),
+
     // Sending substrate (Smartlead) — Phase 2. Read-only in Slice 2.1 (mailboxes + warmup);
     // write + webhook in 2.5. WEBHOOK_SECRET authenticates inbound webhooks: Smartlead does not
     // sign deliveries, so this is the shared token matched (timing-safe) against the registered

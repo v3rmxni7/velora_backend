@@ -2,7 +2,10 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 
 export interface SendDebitParams {
   organizationId: string;
-  reason: 'send' | 'reply';
+  // 'enrichment' reuses the same best-effort discipline: the provider's export credit is already
+  // consumed by the time we debit, so a debit failure must be logged for reconciliation, never
+  // thrown (throwing would fail an enrollment whose paid work already succeeded).
+  reason: 'send' | 'reply' | 'enrichment';
   delta: number; // signed, negative for a debit
   reference: Record<string, unknown>;
   idempotencyKey: string;
