@@ -103,6 +103,22 @@ export interface LocalMatch {
   rating?: number;
 }
 
+/** Identifying hints for a person-enrichment lookup. externalId is the provider-qualified id the
+ *  search stored (e.g. 'apollo:<id>'); the rest are best-effort fallback matchers. */
+export interface PersonEnrichRef {
+  externalId?: string;
+  fullName?: string;
+  companyName?: string;
+  linkedinUrl?: string;
+}
+/** A successful enrichment: a REAL work email (providers must never return locked/placeholder
+ *  addresses — returning null is the honest "couldn't find one"). */
+export interface PersonEnrichment {
+  email: string;
+  title?: string;
+  linkedinUrl?: string;
+}
+
 export interface LeadProvider {
   readonly name: string;
   /** True for a REAL paid provider (Apollo/PDL): the find-leads route enforces the spend guardrail
@@ -112,4 +128,9 @@ export interface LeadProvider {
   searchPeople(filters: PeopleFilters): Promise<PersonMatch[]>;
   searchCompanies(filters: CompanyFilters): Promise<CompanyMatch[]>;
   searchLocal(filters: LocalFilters): Promise<LocalMatch[]>;
+  /** Enrich a saved person lead to obtain a real work email (search results carry none — Apollo's
+   *  api_search omits emails by design). Returns null when the provider cannot produce a real
+   *  address — NEVER a fabricated or placeholder one. Metered providers charge their own credits per
+   *  successful reveal, so callers must run this behind the enrichment spend guard. */
+  enrichPerson(ref: PersonEnrichRef): Promise<PersonEnrichment | null>;
 }

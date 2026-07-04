@@ -6,6 +6,8 @@ import type {
   LocalFilters,
   LocalMatch,
   PeopleFilters,
+  PersonEnrichRef,
+  PersonEnrichment,
   PersonMatch,
 } from './types.js';
 
@@ -62,6 +64,15 @@ export function createSeedProvider(): LeadProvider {
         if (f.nameKeywords && !anyIncl(b.name, f.nameKeywords)) return false;
         return true;
       }).slice(0, f.limit);
+    },
+
+    // Enrichment over the fixture: ONLY for leads this provider produced (seed:* ids) — a foreign
+    // lead (e.g. saved from Apollo, then LEAD_PROVIDER switched back to seed) gets an honest null,
+    // never a fabricated @example.com address on a real person. Free (metered=false), deterministic.
+    async enrichPerson(ref: PersonEnrichRef): Promise<PersonEnrichment | null> {
+      if (!ref.externalId?.startsWith('seed:')) return null;
+      const p = SEED_PEOPLE.find((x) => x.externalId === ref.externalId);
+      return p?.email ? { email: p.email, title: p.title, linkedinUrl: p.linkedinUrl } : null;
     },
   };
 }

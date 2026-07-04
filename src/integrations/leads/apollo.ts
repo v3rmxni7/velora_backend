@@ -9,6 +9,8 @@ import type {
   LocalFilters,
   LocalMatch,
   PeopleFilters,
+  PersonEnrichRef,
+  PersonEnrichment,
   PersonMatch,
   Seniority,
   SizeBand,
@@ -180,6 +182,8 @@ const ApolloPerson = z
   })
   .passthrough();
 const PeopleResponse = z.object({ people: z.array(ApolloPerson).default([]) }).passthrough();
+// people/match wraps a single person (or null when Apollo finds no match).
+const MatchResponse = z.object({ person: ApolloPerson.optional().nullable() }).passthrough();
 const CompaniesResponse = z
   .object({
     organizations: z.array(ApolloOrg).default([]),
@@ -323,6 +327,37 @@ export function createApolloProvider(apiKey: string): LeadProvider {
     // Apollo is not a local-business directory — honest empty rather than a fabricated result.
     async searchLocal(_f: LocalFilters): Promise<LocalMatch[]> {
       return [];
+    },
+
+    // Enrichment: `people/match` — the endpoint that DOES return emails (api_search never does).
+    // Apollo charges ONE export credit per successful email reveal on their meter; a no-match should
+    // cost nothing (to be confirmed against the Apollo dashboard in the live small-test). Same
+    // conventions as search: query-string params, X-Api-Key only, timeout, error-body surfacing.
+    // reveal_personal_emails stays false — work emails only (deliverability + compliance).
+    // FAIL-SAFE: no match / locked / placeholder email → null. Never fabricates an address.
+    async enrichPerson(ref: PersonEnrichRef): Promise<PersonEnrichment | null> {
+      const apolloId = ref.externalId?.startsWith('apollo:')
+        ? ref.externalId.slice('apollo:'.length)
+        : undefined;
+      // Nothing to match on → honest null without a paid call.
+      if (!apolloId && !ref.linkedinUrl && !(ref.fullName && ref.companyName)) return null;
+      const params: ApolloParams = {
+        reveal_personal_emails: 'false',
+        ...(apolloId ? { id: apolloId } : {}),
+        ...(ref.fullName ? { name: ref.fullName } : {}),
+        ...(ref.companyName ? { organization_name: ref.companyName } : {}),
+        ...(ref.linkedinUrl ? { linkedin_url: ref.linkedinUrl } : {}),
+      };
+      const data = parse(MatchResponse, await call('/people/match', params));
+      const p = data.person;
+      if (!p) return null;
+      const email = realEmail(p.email);
+      if (!email) return null;
+      return {
+        email,
+        title: p.title ?? undefined,
+        linkedinUrl: p.linkedin_url ?? undefined,
+      };
     },
   };
 }

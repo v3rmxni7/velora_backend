@@ -160,3 +160,106 @@ describe('Apollo adapter — maps real results + fails safe (mocked fetch)', () 
     expect(globalThis.fetch as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
   });
 });
+
+describe('Apollo enrichPerson — people/match, never fabricates (mocked fetch)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('maps a revealed work email, hitting people/match with id from the stored apollo:<id>', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        person: {
+          id: 'p9',
+          name: 'Ada Lovelace',
+          title: 'CTO',
+          email: 'ada@acme.com',
+          linkedin_url: 'https://linkedin.com/in/ada',
+        },
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = createApolloProvider('test-key');
+    const r = await provider.enrichPerson({ externalId: 'apollo:p9', fullName: 'Ada Lovelace' });
+    expect(r).toEqual({
+      email: 'ada@acme.com',
+      title: 'CTO',
+      linkedinUrl: 'https://linkedin.com/in/ada',
+    });
+    const [reqUrl, reqInit] = fetchMock.mock.calls[0] ?? [];
+    const url = new URL(String(reqUrl));
+    expect(url.pathname).toBe('/api/v1/people/match');
+    expect(url.searchParams.get('id')).toBe('p9');
+    // Work emails only — personal-email reveal stays off (deliverability + compliance).
+    expect(url.searchParams.get('reveal_personal_emails')).toBe('false');
+    const headers = (reqInit?.headers ?? {}) as Record<string, string>;
+    expect(headers['X-Api-Key']).toBe('test-key');
+    expect(headers.Authorization).toBeUndefined();
+  });
+
+  it('returns null (never a fabricated address) when the match carries a locked/placeholder email', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          person: { id: 'p1', email: 'email_not_unlocked@domain.com' },
+        }),
+      }),
+    );
+    const provider = createApolloProvider('test-key');
+    expect(await provider.enrichPerson({ externalId: 'apollo:p1' })).toBeNull();
+  });
+
+  it('returns null when Apollo finds no match', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: true, json: async () => ({ person: null }) }),
+    );
+    const provider = createApolloProvider('test-key');
+    expect(await provider.enrichPerson({ externalId: 'apollo:missing' })).toBeNull();
+  });
+
+  it('skips the paid call entirely when there is nothing to match on', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = createApolloProvider('test-key');
+    // no externalId, no linkedin, and name without company → not enough to match honestly
+    expect(await provider.enrichPerson({ fullName: 'Ada Lovelace' })).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('surfaces Apollo errors (never a silent null on a failed paid call)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 402,
+        text: async () => 'insufficient export credits',
+        json: async () => ({}),
+      }),
+    );
+    const provider = createApolloProvider('test-key');
+    await expect(provider.enrichPerson({ externalId: 'apollo:p1' })).rejects.toMatchObject({
+      code: 'apollo_error',
+      message: expect.stringContaining('insufficient export credits'),
+    });
+  });
+});
+
+describe('Seed enrichPerson — fixture-only, never fabricates for foreign leads', () => {
+  it('enriches its own seed:* leads from the fixture', async () => {
+    const p = selectLeadProvider('seed', {});
+    const all = await p.searchPeople({ limit: 1 });
+    const first = all[0];
+    expect(first).toBeDefined();
+    if (!first) return;
+    const r = await p.enrichPerson({ externalId: first.externalId });
+    // the fixture person's email (if any) — and NEVER an invented one
+    expect(r?.email).toBe(first.email);
+  });
+
+  it('returns null for a foreign (apollo:*) lead — no fabricated fixture email on a real person', async () => {
+    const p = selectLeadProvider('seed', {});
+    expect(await p.enrichPerson({ externalId: 'apollo:12345', fullName: 'Real Person' })).toBeNull();
+  });
+});
