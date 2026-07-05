@@ -9,6 +9,7 @@ import { ensureSmartleadCampaign } from './provision.js';
 
 interface Log {
   campaignUpdates: Record<string, unknown>[];
+  mailboxFilters: [string, unknown][];
 }
 
 function stubDb(log: Log, opts: { claimWins?: boolean } = {}): SupabaseClient {
@@ -16,10 +17,17 @@ function stubDb(log: Log, opts: { claimWins?: boolean } = {}): SupabaseClient {
   return {
     from(table: string) {
       if (table === 'mailboxes') {
+        // Thenable + chainable: eq/not return q so `.not(...).eq('sender_id', ...)` composes, and
+        // `await mbQuery` resolves via then — matching the real PostgREST builder.
         const q: any = {
           select: () => q,
-          eq: () => q,
-          not: () => Promise.resolve({ data: [{ smartlead_email_account_id: 'acc1' }], error: null }),
+          eq: (col: string, val: unknown) => {
+            log.mailboxFilters.push([col, val]);
+            return q;
+          },
+          not: () => q,
+          then: (resolve: (v: unknown) => void) =>
+            resolve({ data: [{ smartlead_email_account_id: 'acc1' }], error: null }),
         };
         return q;
       }
@@ -61,7 +69,7 @@ const camp = { id: 'camp1', organization_id: 'org1', name: 'C' };
 
 describe('ensureSmartleadCampaign — sentinel poisoning fixes', () => {
   it('does NOT short-circuit on a leftover provisioning sentinel — it re-provisions and returns the real id', async () => {
-    const log: Log = { campaignUpdates: [] };
+    const log: Log = { campaignUpdates: [], mailboxFilters: [] };
     const db = stubDb(log);
     const client = fakeClient();
     const id = await ensureSmartleadCampaign(
@@ -74,7 +82,7 @@ describe('ensureSmartleadCampaign — sentinel poisoning fixes', () => {
   });
 
   it('short-circuits on a REAL id (no Smartlead call)', async () => {
-    const log: Log = { campaignUpdates: [] };
+    const log: Log = { campaignUpdates: [], mailboxFilters: [] };
     const client = fakeClient();
     const id = await ensureSmartleadCampaign(
       stubDb(log),
@@ -85,8 +93,29 @@ describe('ensureSmartleadCampaign — sentinel poisoning fixes', () => {
     expect(client.createCampaign).not.toHaveBeenCalled();
   });
 
+  it('scopes mailbox selection to the campaign sender when assigned (only that sender sends)', async () => {
+    const log: Log = { campaignUpdates: [], mailboxFilters: [] };
+    await ensureSmartleadCampaign(
+      stubDb(log),
+      { ...camp, smartlead_campaign_id: null, sender_id: 'sender-1' },
+      fakeClient(),
+    );
+    expect(log.mailboxFilters).toContainEqual(['sender_id', 'sender-1']);
+    expect(log.mailboxFilters).toContainEqual(['status', 'warm']);
+  });
+
+  it('does NOT add a sender filter when the campaign has no sender', async () => {
+    const log: Log = { campaignUpdates: [], mailboxFilters: [] };
+    await ensureSmartleadCampaign(
+      stubDb(log),
+      { ...camp, smartlead_campaign_id: null, sender_id: null },
+      fakeClient(),
+    );
+    expect(log.mailboxFilters.some(([col]) => col === 'sender_id')).toBe(false);
+  });
+
   it('RELEASES the claim to null when a Smartlead call throws (no permanent poisoning)', async () => {
-    const log: Log = { campaignUpdates: [] };
+    const log: Log = { campaignUpdates: [], mailboxFilters: [] };
     const db = stubDb(log);
     const client = fakeClient({
       createCampaign: vi.fn(async () => {

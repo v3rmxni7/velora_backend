@@ -16,6 +16,8 @@ const CreateCampaign = z.object({
   campaignType: z.enum(ALL_CAMPAIGN_TYPES).default('cold_outbound'),
 });
 const IdParam = z.object({ id: z.uuid() });
+// senderId nullable → assigning (uuid) or clearing (null) the campaign's sending identity.
+const PatchCampaign = z.object({ senderId: z.uuid().nullable() });
 const StepInput = z.object({
   delayDays: z.coerce.number().int().min(0).max(365),
   bodyMode: z.enum(['ai_grounded', 'template']),
@@ -92,6 +94,33 @@ export const campaignsRoute: FastifyPluginAsync = async (app) => {
     if (step.error) throw step.error;
 
     return reply.code(201).send({ data: campaign.data });
+  });
+
+  // Assign / clear the campaign's sender (the UI's sender picker). Validates the sender belongs to
+  // the org (mirrors PATCH /mailboxes/:id's sender_not_in_org check). The send path reads sender_id
+  // live (isSenderActive + the live null-sender defer + provision's sender-scoped mailbox filter),
+  // so this is the single control that decides a campaign's sending identity.
+  app.patch('/campaigns/:id', async (request, reply) => {
+    const { db } = requireAuth(request);
+    const { id } = IdParam.parse(request.params);
+    const { senderId } = PatchCampaign.parse(request.body);
+    const own = await db.from('campaigns').select('id').eq('id', id).maybeSingle();
+    if (own.error) throw own.error;
+    if (!own.data) return reply.code(404).send({ error: 'not_found' });
+    if (senderId) {
+      const s = await db.from('senders').select('id').eq('id', senderId).maybeSingle();
+      if (s.error) throw s.error;
+      if (!s.data) return reply.code(422).send({ error: 'sender_not_in_org' });
+    }
+    const { data, error } = await db
+      .from('campaigns')
+      .update({ sender_id: senderId })
+      .eq('id', id)
+      .select('*')
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return reply.code(404).send({ error: 'not_found' });
+    return { data };
   });
 
   app.get('/campaigns', async (request) => {

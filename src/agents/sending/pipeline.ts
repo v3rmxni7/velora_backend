@@ -119,10 +119,17 @@ export async function isSenderActive(db: SupabaseClient, campaignId: string): Pr
   const camp = await db.from('campaigns').select('sender_id').eq('id', campaignId).maybeSingle();
   if (camp.error) throw camp.error;
   const senderId = (camp.data?.sender_id as string | null | undefined) ?? null;
-  if (!senderId) return true; // no assigned sender → not gated
+  if (!senderId) return true; // no assigned sender → not gated (dry-run needs none; live defers below)
   const sender = await db.from('senders').select('status').eq('id', senderId).maybeSingle();
   if (sender.error) throw sender.error;
   return sender.data?.status === 'active';
+}
+
+/** The campaign's assigned sender id (null = unassigned). */
+async function campaignSenderId(db: SupabaseClient, campaignId: string): Promise<string | null> {
+  const camp = await db.from('campaigns').select('sender_id').eq('id', campaignId).maybeSingle();
+  if (camp.error) throw camp.error;
+  return (camp.data?.sender_id as string | null | undefined) ?? null;
 }
 
 export type PrepareOutcome =
@@ -225,6 +232,7 @@ export type SendOutcome =
   | 'suppressed'
   | 'campaign_paused'
   | 'sender_paused'
+  | 'sender_unassigned'
   | 'insufficient_credit'
   | 'verification_required'
   | 'rate_limited'
@@ -390,6 +398,14 @@ export async function executeSend(
   if (mode.sendingEnabled && !mode.dryRun) {
     assertLiveSendAllowed(mode); // defensive; the branch condition already guarantees it
 
+    // A live campaign MUST have an assigned sender — that's the identity + the mailbox scope for the
+    // send. Unassigned → DEFER (leave awaiting_approval, retried by the redrive sweep once a sender
+    // is assigned) rather than blasting through every warm mailbox in the org. Dry-run needs no
+    // sender, so this gate is live-only.
+    if (!(await campaignSenderId(db, enrollment.campaign_id))) {
+      return { outcome: 'sender_unassigned' };
+    }
+
     // M7 — never push an empty draft. The chokepoint does not trust an upstream-stored draft blindly.
     if (!draft.subject?.trim() || !draft.body?.trim()) {
       await db
@@ -467,7 +483,7 @@ export async function executeSend(
     const sl = client ?? createSmartleadClient();
     const campaign = await db
       .from('campaigns')
-      .select('id, organization_id, name, smartlead_campaign_id')
+      .select('id, organization_id, name, smartlead_campaign_id, sender_id')
       .eq('id', enrollment.campaign_id)
       .single();
     if (campaign.error) throw campaign.error;
@@ -478,6 +494,7 @@ export async function executeSend(
         organization_id: org,
         name: campaign.data.name as string | null,
         smartlead_campaign_id: campaign.data.smartlead_campaign_id as string | null,
+        sender_id: campaign.data.sender_id as string | null,
       },
       sl,
     );

@@ -40,6 +40,9 @@ describe.skipIf(!ready)('Slice 2.5 live — LIVE send via fake Smartlead (zero r
   const pwd = `Test-${stamp}-pw!`;
   const a = { orgId: '', userId: '', email: `s25+${stamp}@example.com`, token: '' };
   let campaignId = '';
+  let senderId = '';
+  let nullSenderCampaignId = '';
+  let enrNullSender = '';
   let enrInsufficient = '';
   let enrSuccess = '';
   const leadBEmail = `leadb+${stamp}@example.com`;
@@ -88,12 +91,12 @@ describe.skipIf(!ready)('Slice 2.5 live — LIVE send via fake Smartlead (zero r
     if (p.error) throw p.error;
     return p.data.id as string;
   }
-  async function enroll(leadId: string): Promise<string> {
+  async function enroll(leadId: string, campaign = campaignId): Promise<string> {
     const e = await admin
       .from('enrollments')
       .insert({
         organization_id: a.orgId,
-        campaign_id: campaignId,
+        campaign_id: campaign,
         lead_type: 'person',
         lead_id: leadId,
         status: 'pending',
@@ -134,12 +137,21 @@ describe.skipIf(!ready)('Slice 2.5 live — LIVE send via fake Smartlead (zero r
     a.token = signin.data.session.access_token;
 
     await admin.from('coaching_points').insert({ organization_id: a.orgId, content: 'concise' });
-    // A WARM mailbox so provisioning can assign a sender (2.8: only 'warm' qualifies).
+    // An ACTIVE sender + a WARM mailbox assigned to it (a live campaign now requires a sender, and
+    // provisioning only sends through THAT sender's warm mailboxes).
+    const sender = await admin
+      .from('senders')
+      .insert({ organization_id: a.orgId, display_name: 'Live Sender', status: 'active' })
+      .select('id')
+      .single();
+    if (sender.error) throw sender.error;
+    senderId = sender.data.id as string;
     await admin.from('mailboxes').insert({
       organization_id: a.orgId,
       email: `mb+${stamp}@x.com`,
       smartlead_email_account_id: 'acct-1',
       status: 'warm',
+      sender_id: senderId,
     });
     const camp = await admin
       .from('campaigns')
@@ -148,15 +160,34 @@ describe.skipIf(!ready)('Slice 2.5 live — LIVE send via fake Smartlead (zero r
         name: 'Live',
         campaign_type: 'cold_outbound',
         status: 'active',
+        sender_id: senderId,
       })
       .select('id')
       .single();
     if (camp.error) throw camp.error;
     campaignId = camp.data.id as string;
+    // A second campaign with NO sender — to prove a live send defers (sender_unassigned).
+    const campNull = await admin
+      .from('campaigns')
+      .insert({
+        organization_id: a.orgId,
+        name: 'Live-no-sender',
+        campaign_type: 'cold_outbound',
+        status: 'active',
+      })
+      .select('id')
+      .single();
+    if (campNull.error) throw campNull.error;
+    nullSenderCampaignId = campNull.data.id as string;
     enrInsufficient = await enroll(await person(`s25ins:${stamp}`, `ins+${stamp}@x.com`));
     enrSuccess = await enroll(await person(`s25ok:${stamp}`, leadBEmail));
+    enrNullSender = await enroll(
+      await person(`s25nosender:${stamp}`, `nosender+${stamp}@x.com`),
+      nullSenderCampaignId,
+    );
     await prepareAndApprove(enrInsufficient);
     await prepareAndApprove(enrSuccess);
+    await prepareAndApprove(enrNullSender);
     // THE DELIBERATE FLIP — for THIS test org only. Demo org is never touched.
     await admin
       .from('organizations')
@@ -168,6 +199,20 @@ describe.skipIf(!ready)('Slice 2.5 live — LIVE send via fake Smartlead (zero r
     if (a.orgId) await admin.from('organizations').delete().eq('id', a.orgId);
     if (a.userId) await admin.auth.admin.deleteUser(a.userId);
   });
+
+  it('NO SENDER assigned → live send DEFERS (sender_unassigned), stays awaiting_approval, no push', async () => {
+    const enr = (await admin.from('enrollments').select('*').eq('id', enrNullSender).single()).data;
+    const before = addLeadCalls.length;
+    const res = await executeSend(userDb(a.token), enr as never, fake);
+    expect(res.outcome).toBe('sender_unassigned');
+    const after = await admin
+      .from('enrollments')
+      .select('status')
+      .eq('id', enrNullSender)
+      .single();
+    expect(after.data?.status).toBe('awaiting_approval'); // deferred, not failed
+    expect(addLeadCalls.length).toBe(before); // nothing pushed
+  }, 60_000);
 
   it('INSUFFICIENT credit (no grant) → DEFER (stays awaiting_approval), no push, no debit', async () => {
     const enr = (await admin.from('enrollments').select('*').eq('id', enrInsufficient).single())

@@ -15,6 +15,9 @@ interface CampaignRef {
   organization_id: string;
   name?: string | null;
   smartlead_campaign_id?: string | null;
+  /** The campaign's assigned sender. When set, ONLY that sender's warm mailboxes drive the send —
+   *  a paused sender's mailbox never sends, and one campaign can't borrow another sender's inbox. */
+  sender_id?: string | null;
 }
 
 /**
@@ -42,12 +45,16 @@ export async function ensureSmartleadCampaign(
   // (just-synced, no warmup) and 'warming' (mid-warmup, not yet proven) are EXCLUDED — sending real
   // cold outreach from a cold/un-proven mailbox burns sender reputation. A mailbox reaches 'warm'
   // only via refreshMailboxWarmup once its reputation clears the warmth thresholds (see mailbox-sync).
-  const mb = await db
+  let mbQuery = db
     .from('mailboxes')
     .select('smartlead_email_account_id')
     .eq('organization_id', campaign.organization_id)
     .eq('status', 'warm')
     .not('smartlead_email_account_id', 'is', null);
+  // Scope to the campaign's sender when assigned (the live send path guarantees one — an unassigned
+  // live campaign defers before reaching provisioning). Only that sender's warm mailboxes send.
+  if (campaign.sender_id) mbQuery = mbQuery.eq('sender_id', campaign.sender_id);
+  const mb = await mbQuery;
   if (mb.error) throw mb.error;
   const accountIds = (mb.data ?? [])
     .map((r) => r.smartlead_email_account_id as string | null)
