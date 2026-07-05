@@ -111,6 +111,17 @@ export async function runAnomalySweep(
         .select('id');
       if (flip.error) throw flip.error;
       if ((flip.data ?? []).length === 0) continue; // already off — nothing to audit
+      // Disabling autonomy alone is NO LONGER a hard stop (follow-ups escalate to human tasks, and a
+      // human could still approve). PAUSE the org's active campaigns too — a paused campaign blocks
+      // BOTH cold sends and follow-ups at the executeSend / runFollowupStep chokepoints, regardless
+      // of autonomy or who approves. This is the real "true stop" on a health breach.
+      const pausedCampaigns = await db
+        .from('campaigns')
+        .update({ status: 'paused' })
+        .eq('organization_id', orgId)
+        .eq('status', 'active')
+        .select('id');
+      if (pausedCampaigns.error) throw pausedCampaigns.error;
       await recordAutonomyEvent(db, {
         organizationId: orgId,
         kind: 'auto_pause',

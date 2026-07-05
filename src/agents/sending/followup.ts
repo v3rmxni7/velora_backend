@@ -1,6 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { SmartleadClient } from '../../integrations/smartlead/types.js';
-import { getAutonomyMode } from '../../lib/autonomy-mode.js';
 import type { GenerateDeps } from '../draft/generate.js';
 import { runDraftGeneration } from '../draft/task.js';
 import { runAutoApproval } from './auto-approve.js';
@@ -60,23 +59,31 @@ export async function nextFollowupDue(
 }
 
 export interface FollowupResult {
-  status: 'advanced' | 'halted' | 'completed' | 'escalated';
+  // 'deferred' = the prior step hasn't been DELIVERED yet (live enrollment still 'queued' awaiting
+  // the EMAIL_SENT webhook) — reschedule with backoff rather than halting the whole chain.
+  status: 'advanced' | 'halted' | 'completed' | 'escalated' | 'deferred';
   step?: number;
   reason?: string;
   sendOutcome?: SendOutcome | 'error';
 }
 
 /**
- * Run one follow-up step. Gate (kill switch) → suppression re-check → ADVANCE CAS (the airtight
- * halt-on-reply: only a still-'sent' enrollment at the expected step advances) → generate the
- * step's grounded draft → runAutoApproval (audited; dry-run unless both sending flags are flipped).
- * Returns null only if the enrollment vanished.
+ * Run one follow-up step. Campaign-pause gate → suppression re-check → ADVANCE CAS (the airtight
+ * halt-on-reply: only a still-'sent' enrollment at the prior step advances) → generate the step's
+ * grounded draft → runAutoApproval (auto-sends when autonomy is ON, else ESCALATES the draft to the
+ * human Tasks queue — sequences work in human-approval mode too). Returns null only if the
+ * enrollment vanished.
+ *
+ * `targetStep` (from the scheduling event) is authoritative when provided — it makes the step
+ * RESUMABLE: a retry after a crash between the advance CAS and the draft write is detected (already
+ * at targetStep, awaiting_approval, no task) and resumes drafting instead of failing the CAS.
  */
 export async function runFollowupStep(
   db: SupabaseClient,
   enrollmentId: string,
   client?: SmartleadClient,
   deps: GenerateDeps = {},
+  targetStep?: number,
 ): Promise<FollowupResult | null> {
   const enrRes = await db.from('enrollments').select('*').eq('id', enrollmentId).maybeSingle();
   if (enrRes.error) throw enrRes.error;
@@ -84,12 +91,16 @@ export async function runFollowupStep(
   if (!enrollment) return null;
   const org = enrollment.organization_id;
   const currentStep = enrollment.current_step;
+  // The step we're trying to send. Event-authoritative (resumable); falls back to current+1 for
+  // direct callers/tests. prevStep is the step that must already be 'sent' to advance.
+  const target = targetStep ?? currentStep + 1;
+  const prevStep = target - 1;
 
-  // 1. Kill switch — turning autonomy off halts in-flight sequences (no advance, no send).
-  const mode = await getAutonomyMode(db, org);
-  if (!mode.autonomyEnabled) return { status: 'halted', reason: 'autonomy_disabled' };
+  // NOTE: autonomy is NO LONGER a halt here. Autonomy off is the human-approval posture, in which a
+  // follow-up must still be drafted and ESCALATED to the Tasks queue (runAutoApproval returns null →
+  // 'escalated' below). The true stop is a paused campaign (anomaly auto-pause pauses the campaign).
 
-  // 1b. Campaign pause (4.1a) — a paused campaign halts in-flight follow-ups before any draft/send.
+  // 1. Campaign pause (4.1a) — a paused campaign halts in-flight follow-ups before any draft/send.
   if (!(await isCampaignActive(db, enrollment.campaign_id))) {
     return { status: 'halted', reason: 'campaign_paused' };
   }
@@ -100,37 +111,58 @@ export async function runFollowupStep(
     return { status: 'halted', reason: 'suppressed' };
   }
 
-  // 3. Is there a next step?
-  const nextStep = currentStep + 1;
+  // 3. Is there a step to send?
   const step = await db
     .from('campaign_steps')
     .select('step_number')
     .eq('campaign_id', enrollment.campaign_id)
-    .eq('step_number', nextStep)
+    .eq('step_number', target)
     .maybeSingle();
   if (step.error) throw step.error;
   if (!step.data) {
-    // End of sequence — mark completed (only if still sendable; else leave the terminal status).
+    // End of sequence — mark completed (only if still sendable at the prior step).
     await db
       .from('enrollments')
       .update({ status: 'completed' })
       .eq('id', enrollment.id)
       .eq('status', 'sent')
-      .eq('current_step', currentStep);
+      .eq('current_step', prevStep);
     return { status: 'completed' };
   }
 
-  // 4. ADVANCE CAS — THE halt guard. Only a still-'sent' enrollment at step N advances to N+1.
-  // A reply/bounce/unsub set a non-'sent' terminal status → 0 rows → halt before any draft/send.
-  const cas = await db
-    .from('enrollments')
-    .update({ current_step: nextStep, status: 'awaiting_approval', task_id: null })
-    .eq('id', enrollment.id)
-    .eq('status', 'sent')
-    .eq('current_step', currentStep)
-    .select('id');
-  if (cas.error) throw cas.error;
-  if ((cas.data ?? []).length === 0) return { status: 'halted', reason: 'not_sendable' };
+  // RESUME: a prior attempt already advanced to `target` but crashed before writing the task
+  // (status awaiting_approval, current_step === target, task_id null). Skip the CAS and re-draft.
+  const isResume =
+    enrollment.current_step === target &&
+    enrollment.status === 'awaiting_approval' &&
+    !enrollment.task_id;
+
+  if (!isResume) {
+    // 4. ADVANCE CAS — THE halt guard. Only a still-'sent' enrollment at prevStep advances to target.
+    const cas = await db
+      .from('enrollments')
+      .update({ current_step: target, status: 'awaiting_approval', task_id: null })
+      .eq('id', enrollment.id)
+      .eq('status', 'sent')
+      .eq('current_step', prevStep)
+      .select('id');
+    if (cas.error) throw cas.error;
+    if ((cas.data ?? []).length === 0) {
+      // The CAS missed. WHY? A reply/bounce/unsub set a TERMINAL status → halt (correct). But a live
+      // enrollment still 'queued' means the prior step hasn't been DELIVERED yet (EMAIL_SENT webhook
+      // not in) — the timer just fired early. DEFER (reschedule) rather than kill the chain.
+      const fresh = await db
+        .from('enrollments')
+        .select('status, current_step')
+        .eq('id', enrollment.id)
+        .maybeSingle();
+      if (fresh.error) throw fresh.error;
+      if (fresh.data?.status === 'queued' && (fresh.data?.current_step as number) === prevStep) {
+        return { status: 'deferred', step: target, reason: 'awaiting_delivery' };
+      }
+      return { status: 'halted', reason: 'not_sendable' };
+    }
+  }
 
   // 5. Generate the step's grounded draft (same pipeline; reuses the step-1 verified_email/verification
   // — same address). stepNumber namespaces the draft so it's a distinct, follow-up-coached task.
@@ -141,7 +173,7 @@ export async function runFollowupStep(
       leadType: enrollment.lead_type,
       leadId: enrollment.lead_id,
       campaignId: enrollment.campaign_id,
-      stepNumber: nextStep,
+      stepNumber: target,
       variantId: enrollment.variant_id ?? null, // same cohort as step 1
     },
     deps,
@@ -152,10 +184,12 @@ export async function runFollowupStep(
     .update({ task_id: taskId ?? null })
     .eq('id', enrollment.id);
 
-  // 6. Decide + send via 3.1's audited chokepoint path (dry-run unless both flags flipped).
+  // 6. Decide + send via 3.1's audited chokepoint path (dry-run unless both flags flipped). Autonomy
+  // on → auto_send; autonomy off → runAutoApproval returns null → the draft stays a pending human
+  // task ('escalated'), and the NEXT follow-up is scheduled when the human approves it.
   const auto = await runAutoApproval(db, enrollment.id, client);
   if (auto?.decision === 'auto_send') {
-    return { status: 'advanced', step: nextStep, sendOutcome: auto.sendOutcome };
+    return { status: 'advanced', step: target, sendOutcome: auto.sendOutcome };
   }
-  return { status: 'escalated', step: nextStep, reason: auto?.reason };
+  return { status: 'escalated', step: target, reason: auto?.reason };
 }

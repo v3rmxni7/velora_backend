@@ -246,15 +246,25 @@ describe.skipIf(!ready)(
       expect((await stepMessages(enrId, '2')).length).toBe(0);
     }, 60_000);
 
-    it('KILL SWITCH: autonomy off halts an in-flight sequence (no advance, no send)', async () => {
+    it('HUMAN-APPROVAL MODE: autonomy off ESCALATES the follow-up to the Tasks queue (draft, no auto-send)', async () => {
+      // Autonomy off is the human-approval posture — the sequence must CONTINUE as a human task, not
+      // die. The step advances + drafts, but runAutoApproval escalates (no auto_send); the true stop
+      // is a paused campaign (which halts at the isCampaignActive gate), not autonomy-off.
       await setAutonomy(false);
       const enrId = await seedPostStep1(`kill+${stamp}@x.com`, `kill:${stamp}`, 'sent');
       const res = await runFollowupStep(admin, enrId, fake, personalizedDeps);
-      expect(res?.status).toBe('halted');
-      expect(res?.reason).toBe('autonomy_disabled');
-      const enr = await admin.from('enrollments').select('current_step').eq('id', enrId).single();
-      expect(enr.data?.current_step).toBe(1);
-      expect((await stepMessages(enrId, '2')).length).toBe(0);
+      expect(res?.status).toBe('escalated');
+      expect(res?.step).toBe(2);
+      // Advanced to step 2 and a draft task exists for human review — but NO send happened.
+      const enr = await admin
+        .from('enrollments')
+        .select('current_step, status, task_id')
+        .eq('id', enrId)
+        .single();
+      expect(enr.data?.current_step).toBe(2);
+      expect(enr.data?.status).toBe('awaiting_approval');
+      expect(enr.data?.task_id).toBeTruthy();
+      expect((await autoSendAudits(enrId)).length).toBe(0); // no auto_send decision
     }, 60_000);
 
     it('IDEMPOTENCY: re-running the sequencer produces no second step-2 message', async () => {

@@ -1,10 +1,39 @@
+import type { SupabaseClient } from '@supabase/supabase-js';
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { runDraftGeneration } from '../../agents/draft/task.js';
 import { executeReplySend } from '../../agents/reply/send.js';
+import { nextFollowupDue } from '../../agents/sending/followup.js';
 import { type EnrollmentRecord, executeSend } from '../../agents/sending/pipeline.js';
 import { events, inngest } from '../../workers/inngest/client.js';
 import { authenticate, requireAuth } from '../middleware/auth.js';
+
+// After a HUMAN-approved send goes out (dry_run or queued), schedule the next follow-up step — the
+// autonomy-off (human-approval) path must chain sequences too, not just the autonomy auto-send path
+// (which schedules from campaign-executor). Best-effort: the send already happened, so a scheduling
+// failure is logged, never surfaced. Idempotent via the followup dedupeKey.
+async function scheduleNextFollowup(
+  db: SupabaseClient,
+  enrollmentId: string,
+  log: (e: unknown, m: string) => void,
+): Promise<void> {
+  try {
+    const d = await nextFollowupDue(db, enrollmentId);
+    if (!d) return;
+    await db
+      .from('enrollments')
+      .update({ scheduled_at: new Date(d.dueTs).toISOString() })
+      .eq('id', enrollmentId);
+    await inngest.send({
+      name: events.campaignFollowup.name,
+      data: { ...d, dedupeKey: `followup:${d.enrollmentId}:${d.nextStep}` },
+    });
+  } catch (err) {
+    log(err, 'scheduleNextFollowup failed (send already succeeded)');
+  }
+}
+
+const SENT_OUTCOMES = new Set(['dry_run', 'queued']);
 
 const ListQuery = z.object({
   type: z.enum(['outbound_approval', 'manual', 'platform', 'reply_approval']).optional(),
@@ -88,6 +117,11 @@ export const tasksRoute: FastifyPluginAsync = async (app) => {
         if (enr.data) {
           const res = await executeSend(db, enr.data as EnrollmentRecord);
           send = res.outcome;
+          if (SENT_OUTCOMES.has(res.outcome)) {
+            await scheduleNextFollowup(db, enr.data.id as string, (e, m) =>
+              request.log.error({ err: e, taskId: id }, m),
+            );
+          }
         }
       } catch (err) {
         request.log.error({ err, taskId: id }, 'executeSend after approval failed');
@@ -145,6 +179,11 @@ export const tasksRoute: FastifyPluginAsync = async (app) => {
         if (enr.data) {
           const res = await executeSend(db, enr.data as EnrollmentRecord);
           sent[res.outcome] = (sent[res.outcome] ?? 0) + 1;
+          if (SENT_OUTCOMES.has(res.outcome)) {
+            await scheduleNextFollowup(db, enr.data.id as string, (e, m) =>
+              request.log.error({ err: e, taskId: task.id }, m),
+            );
+          }
         }
       } catch (err) {
         request.log.error({ err, taskId: task.id }, 'executeSend after approve-all failed');

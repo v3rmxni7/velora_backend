@@ -36,7 +36,14 @@ export const events = {
   // re-checks + sends step `nextStep` (or halts). dedupeKey = `followup:${enrollmentId}:${nextStep}`.
   campaignFollowup: eventType('campaign/followup.due', {
     schema: staticSchema<
-      Dedupe & { organizationId: string; enrollmentId: string; nextStep: number; dueTs: number }
+      Dedupe & {
+        organizationId: string;
+        enrollmentId: string;
+        nextStep: number;
+        dueTs: number;
+        // Incremented each time a not-yet-delivered step reschedules; bounds the retry loop.
+        retry?: number;
+      }
     >(),
   }),
   // Phase 3 Slice 3.3b — an 'engage' reply needs a grounded draft for human review. The consumer
