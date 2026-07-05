@@ -107,6 +107,29 @@ describe('Apollo adapter — maps real results + fails safe (mocked fetch)', () 
     expect(headers.Authorization).toBeUndefined(); // NO Bearer — Apollo would 401 INVALID_ACCESS_TOKEN
   });
 
+  it('folds industry + department into q_keywords and does NOT send person_departments (api_search ignores it)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ people: [] }) });
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = createApolloProvider('test-key');
+    await provider.searchPeople({
+      keywords: ['growth'],
+      companyIndustries: ['fintech', 'real_estate'],
+      departments: ['hr'],
+      seniorities: ['c_level'],
+      limit: 10,
+    } as never);
+    const url = new URL(String(fetchMock.mock.calls[0]?.[0]));
+    const kw = url.searchParams.get('q_keywords') ?? '';
+    expect(kw).toContain('growth');
+    expect(kw).toContain('fintech');
+    expect(kw).toContain('real estate'); // real_estate → readable phrase
+    expect(kw).toContain('human resources'); // hr → readable phrase
+    // person_departments is NOT sent (api_search ignores it — verified live 2026-07-05)
+    expect(url.searchParams.getAll('person_departments[]')).toEqual([]);
+    // seniorities ARE still a structured filter (api_search honors them)
+    expect(url.searchParams.getAll('person_seniorities[]')).toContain('c_suite');
+  });
+
   it('throws (never fabricates) on a non-2xx response, surfacing Apollo’s own error body', async () => {
     vi.stubGlobal(
       'fetch',

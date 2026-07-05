@@ -116,25 +116,36 @@ const toApolloSeniorities = (xs: readonly string[]): string[] => [
   ...new Set(xs.flatMap((s) => SENIORITY_TO_APOLLO[s.toLowerCase()] ?? [])),
 ];
 
-// FORWARD map (Velora department vocabulary → Apollo person_departments). Best-effort values, to be
-// live-verified: an unrecognized Apollo department matches ZERO people (same class as the seniority
-// bug), so a wrong value here silently drops results — never a 422. 'other' → no filter. Verified
-// live via find-leads searches; any value that returns nothing gets corrected.
-const DEPARTMENT_TO_APOLLO: Record<string, string[]> = {
-  engineering: ['engineering'],
-  sales: ['sales', 'business_development'],
-  marketing: ['marketing'],
-  product: ['product_management'],
-  finance: ['finance'],
-  operations: ['operations'],
-  hr: ['human_resources'],
-  legal: ['legal'],
-  support: ['support'],
-  other: [],
+// Industry + department are folded into q_keywords, NOT sent as structured filters. Verified live
+// (2026-07-05) against mixed_people/api_search: it silently IGNORES person_departments and neither
+// filters nor returns company industry — but q_keywords DOES narrow correctly (kw='fintech' → only
+// fintech companies; kw='healthcare' → only healthcare). So the honest way to apply the parsed
+// industry/department chips on this endpoint is as keyword terms. (person_seniorities is different —
+// it IS honored, so seniorities stay a structured filter above.)
+const INDUSTRY_KEYWORD: Record<string, string> = {
+  saas: 'saas',
+  fintech: 'fintech',
+  healthcare: 'healthcare',
+  ecommerce: 'ecommerce',
+  manufacturing: 'manufacturing',
+  agency: 'agency',
+  edtech: 'education',
+  biotech: 'biotechnology',
+  logistics: 'logistics',
+  real_estate: 'real estate',
 };
-const toApolloDepartments = (xs: readonly string[]): string[] => [
-  ...new Set(xs.flatMap((d) => DEPARTMENT_TO_APOLLO[d.toLowerCase()] ?? [])),
-];
+const DEPARTMENT_KEYWORD: Record<string, string> = {
+  engineering: 'engineering',
+  sales: 'sales',
+  marketing: 'marketing',
+  product: 'product',
+  finance: 'finance',
+  operations: 'operations',
+  hr: 'human resources',
+  legal: 'legal',
+  support: 'support',
+  // 'other' → no keyword (meaningless as a search term)
+};
 
 const mapSeniority = (s?: string | null): Seniority =>
   SENIORITY_MAP[(s ?? '').toLowerCase()] ?? 'mid';
@@ -281,36 +292,24 @@ export function createApolloProvider(apiKey: string): LeadProvider {
 
     async searchPeople(f: PeopleFilters): Promise<PersonMatch[]> {
       const sizeRange = f.companySize ? sizeToRange(f.companySize) : undefined;
+      // api_search honors person_titles / person_seniorities / person_locations / org-size / q_keywords.
+      // It does NOT honor person_departments and can't filter by industry (verified live) — so the
+      // parsed industry + department chips are folded into q_keywords, where they DO narrow results.
+      const keywords = [
+        ...(f.keywords ?? []),
+        ...(f.companyIndustries ?? []).flatMap((i) => { const k = INDUSTRY_KEYWORD[i]; return k ? [k] : []; }),
+        ...(f.departments ?? []).flatMap((d) => { const k = DEPARTMENT_KEYWORD[d]; return k ? [k] : []; }),
+      ];
       const params: ApolloParams = {
         page: '1',
         per_page: String(clampLimit(f.limit)),
         ...(f.titleKeywords?.length ? { person_titles: f.titleKeywords } : {}),
         ...(f.seniorities?.length ? { person_seniorities: toApolloSeniorities(f.seniorities) } : {}),
-        ...(f.departments?.length ? { person_departments: toApolloDepartments(f.departments) } : {}),
         ...(f.locations?.length ? { person_locations: f.locations } : {}),
         ...(sizeRange ? { organization_num_employees_ranges: [sizeRange] } : {}),
-        ...(f.keywords?.length ? { q_keywords: f.keywords.join(' ') } : {}),
+        ...(keywords.length ? { q_keywords: keywords.join(' ') } : {}),
       };
       const data = parse(PeopleResponse, await call('/mixed_people/api_search', params));
-      // INDUSTRY-TAG HARVEST (temporary, verify-B): api_search filters industry by opaque hex tag id,
-      // not name — so log the (name → tag id) pairs Apollo returns to build a VERIFIED map with zero
-      // guessing. Removed once the industry map is wired. No PII (industry + tag id only).
-      const seenIndustries = new Map<string, string>();
-      for (const pp of data.people) {
-        const o = pp.organization as Record<string, unknown> | null | undefined;
-        const name = typeof o?.industry === 'string' ? o.industry : undefined;
-        const tagId =
-          (typeof o?.industry_tag_id === 'string' && o.industry_tag_id) ||
-          (Array.isArray(o?.organization_industry_tag_ids) && o?.organization_industry_tag_ids[0]) ||
-          undefined;
-        if (name && tagId) seenIndustries.set(name, String(tagId));
-      }
-      if (seenIndustries.size > 0) {
-        console.log(
-          '[apollo-industry-probe]',
-          JSON.stringify([...seenIndustries.entries()].slice(0, 25)),
-        );
-      }
       return data.people.map((p): PersonMatch => {
         const org = p.organization ?? undefined;
         const full = p.name ?? `${p.first_name ?? ''} ${p.last_name ?? ''}`.trim();
@@ -340,13 +339,19 @@ export function createApolloProvider(apiKey: string): LeadProvider {
 
     async searchCompanies(f: CompanyFilters): Promise<CompanyMatch[]> {
       const sizeRange = f.size ? sizeToRange(f.size) : undefined;
+      // Fold the parsed industries into the keyword tags (same reason as people search — a name-based
+      // industry filter isn't reliable here; keyword tags narrow correctly). Previously dropped.
+      const keywordTags = [
+        ...(f.keywords ?? []),
+        ...(f.industries ?? []).flatMap((i) => { const k = INDUSTRY_KEYWORD[i]; return k ? [k] : []; }),
+      ];
       const params: ApolloParams = {
         page: '1',
         per_page: String(clampLimit(f.limit)),
         ...(f.nameKeywords?.length ? { q_organization_name: f.nameKeywords.join(' ') } : {}),
         ...(f.locations?.length ? { organization_locations: f.locations } : {}),
         ...(sizeRange ? { organization_num_employees_ranges: [sizeRange] } : {}),
-        ...(f.keywords?.length ? { q_organization_keyword_tags: f.keywords } : {}),
+        ...(keywordTags.length ? { q_organization_keyword_tags: keywordTags } : {}),
       };
       const data = parse(CompaniesResponse, await call('/mixed_companies/search', params));
       const orgs = data.organizations.length ? data.organizations : (data.accounts ?? []);
