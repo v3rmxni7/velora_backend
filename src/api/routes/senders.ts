@@ -18,6 +18,7 @@ const PatchSender = z.object({
 });
 const PrimaryMailbox = z.object({ mailboxId: z.uuid().nullable() });
 const PatchMailbox = z.object({ senderId: z.uuid().nullable() });
+const WarmupOverride = z.object({ override: z.boolean() });
 
 // Team surface (Phase 2 Slice 2.1): senders, their mailboxes, sending domains. All user-scoped
 // (RLS). Read-only against Smartlead — nothing here can send.
@@ -132,6 +133,25 @@ export const sendersRoute: FastifyPluginAsync = async (app) => {
     const { data, error } = await db
       .from('mailboxes')
       .update({ sender_id: senderId, is_primary: false })
+      .eq('id', id)
+      .select('*')
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return reply.code(404).send({ error: 'not_found' });
+    return { data };
+  });
+
+  // Established-mailbox attestation (4.x — the warm-up fast lane). An operator marks a real, in-use
+  // mailbox as ready-to-send without waiting for the warm-up SEND threshold. Deliberate send-safety
+  // act: setting it true forces 'warm' immediately (still spam-ceiling-checked on future refreshes,
+  // via classifyWarmth's override branch); clearing it drops back to 'warming' to re-prove.
+  app.patch('/mailboxes/:id/warmup-override', async (request, reply) => {
+    const { db } = requireAuth(request);
+    const { id } = IdParam.parse(request.params);
+    const { override } = WarmupOverride.parse(request.body);
+    const { data, error } = await db
+      .from('mailboxes')
+      .update({ warmup_override: override, status: override ? 'warm' : 'warming' })
       .eq('id', id)
       .select('*')
       .maybeSingle();

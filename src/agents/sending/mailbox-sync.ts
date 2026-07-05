@@ -86,11 +86,17 @@ export const MAX_SPAM_RATE = 0.05;
 export function classifyWarmth(
   reputation: { sent?: number; spam?: number } | null | undefined,
   warmupActive: boolean,
+  override = false,
 ): 'warm' | 'warming' | 'connected' {
-  if (!warmupActive) return 'connected';
   const sent = reputation?.sent ?? 0;
   const spam = reputation?.spam ?? 0;
-  const spamRate = sent > 0 ? spam / sent : 1;
+  const spamRate = sent > 0 ? spam / sent : 0; // no sends yet → no evidence of spam (0, not 1)
+  // Established-mailbox override: an operator has attested this is a real, in-use mailbox, so skip
+  // the warm-up SEND threshold — but still honor the spam-rate ceiling as a live safety (if a warm-up
+  // read ever shows a bad spam rate, it will NOT be forced warm). Independent of warmupActive: an
+  // established mailbox is warm whether or not the warm-up tool is currently running.
+  if (override) return spamRate <= MAX_SPAM_RATE ? 'warm' : 'warming';
+  if (!warmupActive) return 'connected';
   if (sent >= MIN_WARMUP_SENT && spamRate <= MAX_SPAM_RATE) return 'warm';
   return 'warming';
 }
@@ -112,6 +118,17 @@ export async function syncMailboxes(
     .select('id');
   if (up.error) throw up.error;
   const ids = (up.data ?? []).map((r) => r.id as string);
+  // The upsert recomputes status from Smartlead's warmup_details ('warming'/'connected'), which would
+  // otherwise DOWNGRADE an operator-attested established mailbox on every re-sync. Re-assert 'warm'
+  // for any overridden mailbox so the attestation sticks. (A per-mailbox refresh then keeps it warm.)
+  const reWarm = await db
+    .from('mailboxes')
+    .update({ status: 'warm' })
+    .eq('organization_id', organizationId)
+    .eq('warmup_override', true)
+    .neq('status', 'warm')
+    .select('id');
+  if (reWarm.error) throw reWarm.error;
   return { synced: ids.length, mailboxIds: ids };
 }
 
@@ -123,7 +140,7 @@ export async function refreshMailboxWarmup(
 ): Promise<{ ok: boolean }> {
   const mb = await db
     .from('mailboxes')
-    .select('id, smartlead_email_account_id, status')
+    .select('id, smartlead_email_account_id, status, warmup_override')
     .eq('id', mailboxId)
     .maybeSingle();
   if (mb.error) throw mb.error;
@@ -132,14 +149,17 @@ export async function refreshMailboxWarmup(
   const stats = await client.getWarmupStats(smartleadId);
   const reputation = mapWarmupStatsToReputation(stats);
   // Warmup was active iff the mailbox was previously 'warming'/'warm' (set from the account's
-  // warmup_details at sync time). Promote to 'warm' / demote on this fresh reputation read.
+  // warmup_details at sync time). Promote to 'warm' / demote on this fresh reputation read. The
+  // established-mailbox override forces 'warm' (still spam-ceiling-checked) so a refresh never
+  // demotes an operator-attested mailbox below the send threshold.
   const status = String(mb.data?.status ?? '');
   const warmupActive = status === 'warming' || status === 'warm';
+  const override = mb.data?.warmup_override === true;
   const upd = await db
     .from('mailboxes')
     .update({
       reputation,
-      status: classifyWarmth(reputation as { sent?: number; spam?: number }, warmupActive),
+      status: classifyWarmth(reputation as { sent?: number; spam?: number }, warmupActive, override),
       last_synced_at: new Date().toISOString(),
     })
     .eq('id', mailboxId);

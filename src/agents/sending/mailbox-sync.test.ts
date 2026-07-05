@@ -85,4 +85,18 @@ describe('classifyWarmth (H2 — only genuinely warm mailboxes may send)', () =>
   it("stays 'warming' when spam rate is too high even with volume", () => {
     expect(classifyWarmth({ sent: 1000, spam: 200 }, true)).toBe('warming'); // 20% spam
   });
+
+  describe('established-mailbox override', () => {
+    it("forces 'warm' below the send threshold (even with 0 warm-up sends)", () => {
+      expect(classifyWarmth({ sent: 5, spam: 0 }, true, true)).toBe('warm');
+      expect(classifyWarmth({ sent: 0, spam: 0 }, false, true)).toBe('warm'); // warm even if warm-up off
+      expect(classifyWarmth(null, false, true)).toBe('warm');
+    });
+    it('still honors the spam-rate ceiling — a bad spam rate is NOT forced warm', () => {
+      expect(classifyWarmth({ sent: 100, spam: 20 }, true, true)).toBe('warming'); // 20% spam
+    });
+    it('default (no override) is unchanged', () => {
+      expect(classifyWarmth({ sent: 5, spam: 0 }, true)).toBe('warming');
+    });
+  });
 });
