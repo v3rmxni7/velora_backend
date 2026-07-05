@@ -77,12 +77,17 @@ async function resolveTarget(
   const recipient = event.to_email ?? event.lead_email;
   if (!recipient) return null;
 
+  // A (campaign, verified_email) pair is not unique — the same person can be re-enrolled (e.g. a
+  // manual re-add after a prior terminal state). Take the MOST RECENT enrollment rather than letting
+  // .maybeSingle() throw on multiple rows (which would 500 the webhook and make Smartlead retry).
   const enr = await db
     .from('enrollments')
     .select('id, thread_id')
     .eq('organization_id', org)
     .eq('campaign_id', camp.data.id)
     .eq('verified_email', recipient)
+    .order('created_at', { ascending: false })
+    .limit(1)
     .maybeSingle();
   if (enr.error) throw enr.error;
   if (!enr.data) return null;
@@ -147,10 +152,16 @@ export async function applySmartleadEvent(
       .eq('direction', 'outbound');
     if (m.error) throw m.error;
     if (update.enrollmentStatus) {
+      // Un-halt guard: an EMAIL_SENT confirmation may only PROMOTE a still-in-flight send
+      // ('queued') to 'sent'. A late/duplicate EMAIL_SENT must NEVER resurrect a terminal status
+      // (replied / bounced / unsubscribed) — doing so would un-halt the sequence and let a
+      // follow-up go to someone who already replied or opted out. The .in() filter makes the
+      // out-of-order event a safe no-op.
       const e = await db
         .from('enrollments')
         .update({ status: update.enrollmentStatus })
-        .eq('id', t.enrollmentId);
+        .eq('id', t.enrollmentId)
+        .in('status', ['queued']);
       if (e.error) throw e.error;
     }
     return { handled: true };
