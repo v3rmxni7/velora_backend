@@ -116,6 +116,26 @@ const toApolloSeniorities = (xs: readonly string[]): string[] => [
   ...new Set(xs.flatMap((s) => SENIORITY_TO_APOLLO[s.toLowerCase()] ?? [])),
 ];
 
+// FORWARD map (Velora department vocabulary → Apollo person_departments). Best-effort values, to be
+// live-verified: an unrecognized Apollo department matches ZERO people (same class as the seniority
+// bug), so a wrong value here silently drops results — never a 422. 'other' → no filter. Verified
+// live via find-leads searches; any value that returns nothing gets corrected.
+const DEPARTMENT_TO_APOLLO: Record<string, string[]> = {
+  engineering: ['engineering'],
+  sales: ['sales', 'business_development'],
+  marketing: ['marketing'],
+  product: ['product_management'],
+  finance: ['finance'],
+  operations: ['operations'],
+  hr: ['human_resources'],
+  legal: ['legal'],
+  support: ['support'],
+  other: [],
+};
+const toApolloDepartments = (xs: readonly string[]): string[] => [
+  ...new Set(xs.flatMap((d) => DEPARTMENT_TO_APOLLO[d.toLowerCase()] ?? [])),
+];
+
 const mapSeniority = (s?: string | null): Seniority =>
   SENIORITY_MAP[(s ?? '').toLowerCase()] ?? 'mid';
 const mapDepartment = (d?: string | null): Department =>
@@ -266,12 +286,31 @@ export function createApolloProvider(apiKey: string): LeadProvider {
         per_page: String(clampLimit(f.limit)),
         ...(f.titleKeywords?.length ? { person_titles: f.titleKeywords } : {}),
         ...(f.seniorities?.length ? { person_seniorities: toApolloSeniorities(f.seniorities) } : {}),
-        ...(f.departments?.length ? { person_departments: f.departments } : {}),
+        ...(f.departments?.length ? { person_departments: toApolloDepartments(f.departments) } : {}),
         ...(f.locations?.length ? { person_locations: f.locations } : {}),
         ...(sizeRange ? { organization_num_employees_ranges: [sizeRange] } : {}),
         ...(f.keywords?.length ? { q_keywords: f.keywords.join(' ') } : {}),
       };
       const data = parse(PeopleResponse, await call('/mixed_people/api_search', params));
+      // INDUSTRY-TAG HARVEST (temporary, verify-B): api_search filters industry by opaque hex tag id,
+      // not name — so log the (name → tag id) pairs Apollo returns to build a VERIFIED map with zero
+      // guessing. Removed once the industry map is wired. No PII (industry + tag id only).
+      const seenIndustries = new Map<string, string>();
+      for (const pp of data.people) {
+        const o = pp.organization as Record<string, unknown> | null | undefined;
+        const name = typeof o?.industry === 'string' ? o.industry : undefined;
+        const tagId =
+          (typeof o?.industry_tag_id === 'string' && o.industry_tag_id) ||
+          (Array.isArray(o?.organization_industry_tag_ids) && o?.organization_industry_tag_ids[0]) ||
+          undefined;
+        if (name && tagId) seenIndustries.set(name, String(tagId));
+      }
+      if (seenIndustries.size > 0) {
+        console.log(
+          '[apollo-industry-probe]',
+          JSON.stringify([...seenIndustries.entries()].slice(0, 25)),
+        );
+      }
       return data.people.map((p): PersonMatch => {
         const org = p.organization ?? undefined;
         const full = p.name ?? `${p.first_name ?? ''} ${p.last_name ?? ''}`.trim();
