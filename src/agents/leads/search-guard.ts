@@ -43,19 +43,10 @@ export async function countLeadSearchesToday(
   return count ?? 0;
 }
 
-/** Sum the org's credit_ledger balance. Local copy of pipeline.creditBalance so the sending module is
- *  left completely untouched by this slice. */
-export async function creditBalanceFor(
-  db: SupabaseClient,
-  organizationId: string,
-): Promise<number> {
-  const { data, error } = await db
-    .from('credit_ledger')
-    .select('delta')
-    .eq('organization_id', organizationId);
-  if (error) throw error;
-  return (data ?? []).reduce((sum, r) => sum + Number(r.delta), 0);
-}
+/** Sum the org's credit_ledger balance IN THE DATABASE (org_credit_balance RPC) — a client-side sum
+ *  truncates at the 1000-row cap and would corrupt the search/enrich credit gates. Re-exported so
+ *  existing importers (find-leads route, enrich) keep the same call site. */
+export { orgCreditBalance as creditBalanceFor } from '../../lib/credit-balance.js';
 
 /** Record ONE metered lead-search debit (service-role only). A fresh idempotency_key per search; the
  *  spend CEILING is the daily quota, not per-row idempotency (each user search is a distinct charge).

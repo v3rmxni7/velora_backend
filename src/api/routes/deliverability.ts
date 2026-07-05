@@ -34,7 +34,8 @@ export const deliverabilityRoute: FastifyPluginAsync = async (app) => {
         .eq('status', 'bounced'),
       // org-only (exclude global NULL-org suppression rows — those aren't this tenant's list).
       db.from('suppression_list').select('reason').eq('organization_id', organizationId),
-      db.from('credit_ledger').select('delta'),
+      // Balance summed in the DB — a client-side sum truncates at the 1000-row cap.
+      db.rpc('org_credit_balance', { p_org: organizationId }),
       db.from('mailboxes').select('status'),
     ]);
     for (const r of [sendsToday, bounces, suppression, ledger, mailboxes]) {
@@ -46,7 +47,7 @@ export const deliverabilityRoute: FastifyPluginAsync = async (app) => {
       const reason = row.reason as string;
       suppressionByReason[reason] = (suppressionByReason[reason] ?? 0) + 1;
     }
-    const creditBalance = (ledger.data ?? []).reduce((sum, r) => sum + Number(r.delta), 0);
+    const creditBalance = Number(ledger.data ?? 0);
     const mailboxesByStatus: Record<string, number> = {};
     for (const row of mailboxes.data ?? []) {
       const status = row.status as string;

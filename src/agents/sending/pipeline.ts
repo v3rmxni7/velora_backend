@@ -6,6 +6,7 @@ import type { SmartleadClient } from '../../integrations/smartlead/types.js';
 import { createMillionVerifier } from '../../integrations/verifier/millionverifier.js';
 import type { EmailVerifier } from '../../integrations/verifier/types.js';
 import { AppError } from '../../lib/errors.js';
+import { orgCreditBalance } from '../../lib/credit-balance.js';
 import { assertLiveSendAllowed, getSendingMode } from '../../lib/sending-mode.js';
 import type { GenerateDeps, LeadType } from '../draft/generate.js';
 import { runDraftGeneration } from '../draft/task.js';
@@ -90,14 +91,9 @@ export async function isSuppressed(
   );
 }
 
-async function creditBalance(db: SupabaseClient, organizationId: string): Promise<number> {
-  const { data, error } = await db
-    .from('credit_ledger')
-    .select('delta')
-    .eq('organization_id', organizationId);
-  if (error) throw error;
-  return (data ?? []).reduce((sum, r) => sum + Number(r.delta), 0);
-}
+// Balance is summed IN THE DATABASE (org_credit_balance RPC) — a client-side sum truncates at the
+// 1000-row cap and would corrupt this send credit gate for any org with a long ledger.
+const creditBalance = orgCreditBalance;
 
 /**
  * 4.1a — a campaign is sendable only while its status is 'active'. A paused/completed/archived/draft

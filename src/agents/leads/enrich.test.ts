@@ -17,6 +17,11 @@ interface Behavior {
 function stubDb(b: Behavior, log: { debits: unknown[]; emailWrites: unknown[] }): SupabaseClient {
   let peopleReads = 0;
   return {
+    // Balance is now summed via the org_credit_balance RPC (DB-side, avoids the 1000-row cap).
+    rpc: async (_fn: string, _args: unknown) => ({
+      data: (b.balanceRows ?? [{ delta: 200 }]).reduce((s, r) => s + Number(r.delta), 0),
+      error: null,
+    }),
     from(table: string) {
       if (table === 'people') {
         return {

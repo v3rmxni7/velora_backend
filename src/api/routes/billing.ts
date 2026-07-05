@@ -5,6 +5,7 @@ import {
   PLAN_TIERS,
   type PlanTier,
 } from '../../billing/plans.js';
+import { orgCreditBalance } from '../../lib/credit-balance.js';
 import { authenticate, requireAuth } from '../middleware/auth.js';
 
 // 4.10 — billing surface (SPEC §10/§3.14). HONEST SHELL for payments: the current plan + tiers + the
@@ -26,10 +27,9 @@ export const billingRoute: FastifyPluginAsync = async (app) => {
     if (org.error) throw org.error;
     const plan = (org.data?.plan as PlanTier | undefined) ?? 'starter';
 
-    // Balance = Σ(delta) over the org's ledger (RLS-scoped — a tenant can't read another's).
-    const ledger = await db.from('credit_ledger').select('delta');
-    if (ledger.error) throw ledger.error;
-    const balance = (ledger.data ?? []).reduce((sum, r) => sum + Number(r.delta), 0);
+    // Balance = Σ(delta) summed in the DB (RLS-scoped). A client-side sum truncates at the 1000-row
+    // cap and would UNDER-report a long-lived org's balance.
+    const balance = await orgCreditBalance(db, organizationId);
 
     return {
       data: {
