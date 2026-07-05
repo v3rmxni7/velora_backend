@@ -200,7 +200,12 @@ export async function generateDraft(
   const firstName = typeof lead.first_name === 'string' ? lead.first_name : undefined;
   const companyName =
     leadFields.company_name ?? (leadType !== 'person' ? leadFields.name : undefined);
-  const valueProp = proof[0]?.text ?? coaching[0] ?? '';
+  // The template value prop is CUSTOMER-FACING copy interpolated into the email body, so it may ONLY
+  // come from a proof point (customer-facing evidence). It must NEVER fall back to a coaching_point /
+  // steering line — those are INTERNAL instructions ("be concise", "push the Q3 discount") that would
+  // leak verbatim to the recipient. Empty → renderTemplate's safe static default. (coaching still
+  // steers the Writer on the personalized path below; it just never becomes literal body copy.)
+  const valueProp = proof[0]?.text ?? '';
 
   // Gate (verify.ts decideDraftMode): 'personalized' must be earned — enough verified
   // facts AND at least one substantive lead fact; otherwise the safe template (the
@@ -248,7 +253,9 @@ export async function generateDraft(
     });
     if (!w) continue;
     writerUsage = w.usage;
-    const v = verifyDraft(w.body, allowedCorpus, w.usedFactIds, factIds);
+    // Verify the SUBJECT as well as the body — a fabricated number/name in the subject line ("Cut
+    // costs 40% at Acme") is just as much a hallucination as one in the body, and was previously unchecked.
+    const v = verifyDraft(`${w.subject ?? ''}\n${w.body}`, allowedCorpus, w.usedFactIds, factIds);
     if (v.ok) {
       return {
         subject: w.subject,

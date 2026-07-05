@@ -56,6 +56,21 @@ describe('verifyDraft (BACKSTOP — hard-claim token scan)', () => {
     expect(r.ok).toBe(false);
   });
 
+  // Real names with intra-word punctuation / accents used to be DELETED into a different token and
+  // falsely flagged (→ every O'Brien / L'Oréal draft fell back to template). They must PASS now.
+  it("does NOT flag a real name with an apostrophe when it's in the corpus (O'Brien)", () => {
+    const r = verifyDraft('Great work at O’Brien Consulting.', "o'brien consulting", [], []);
+    expect(r.ok).toBe(true);
+  });
+  it('does NOT flag an accented/hyphenated corpus name (L’Oréal, Coca-Cola)', () => {
+    const r = verifyDraft('Saw the L’Oréal and Coca-Cola case studies.', "l'oréal coca-cola case", [], []);
+    expect(r.ok).toBe(true);
+  });
+  it('still flags a fabricated name even with the fold (Globex not in corpus)', () => {
+    const r = verifyDraft('As seen at Globex.', "o'brien consulting", [], []);
+    expect(r.ok).toBe(false);
+  });
+
   // DOCUMENTS THE LIMITATION (real safety boundary): the token scan is a backstop and does
   // NOT catch soft/qualitative unsupported claims. The PRIMARY defenses are source-binding
   // (filterFacts) + the thin-facts→template gate in generate.ts. Do not over-trust this scan.

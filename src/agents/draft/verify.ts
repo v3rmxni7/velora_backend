@@ -75,6 +75,17 @@ export interface VerifyResult {
  * company/product name surfaces as such a word and won't be in the corpus; known names
  * (recipient, company, proof) are in the corpus and pass.
  */
+/** Fold diacritics (é→e) then drop non-alphanumerics. Applied identically to a body word AND to the
+ *  corpus, so a real name with intra-word punctuation/accents — O'Brien, L'Oréal, Coca-Cola, Zoë —
+ *  matches instead of being deleted into a different token and falsely flagged. Preserves case (the
+ *  proper-noun regex needs the leading capital). */
+export function foldToken(s: string): string {
+  return s
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^A-Za-z0-9]/g, '');
+}
+
 export function extractHardClaims(body: string): string[] {
   const claims = new Set<string>();
   for (const m of body.matchAll(/\$\s?\d[\d,.]*/g)) claims.add(m[0].trim());
@@ -83,7 +94,7 @@ export function extractHardClaims(body: string): string[] {
   for (const segment of body.split(/[.!?\n]+/)) {
     const words = segment.trim().split(/\s+/);
     for (let i = 1; i < words.length; i++) {
-      const w = (words[i] ?? '').replace(/[^A-Za-z0-9]/g, '');
+      const w = foldToken(words[i] ?? ''); // fold accents BEFORE stripping so é isn't lost as a letter
       if (/^[A-Z][a-zA-Z]{2,}$/.test(w)) claims.add(w);
     }
   }
@@ -105,9 +116,16 @@ export function verifyDraft(
   for (const id of usedFactIds) {
     if (!factIds.includes(id)) unverified.push(`unknown-fact:${id}`);
   }
-  const corpus = allowedCorpus.toLowerCase();
+  const rawCorpus = allowedCorpus.toLowerCase();
+  // Folded corpus (accents dropped, punctuation removed) so a folded proper-noun claim matches a
+  // corpus name with an apostrophe/accent/hyphen. Money/%/number claims are checked against the raw
+  // corpus first, so they keep their exact form.
+  const foldedCorpus = foldToken(allowedCorpus).toLowerCase();
   for (const claim of extractHardClaims(body)) {
-    if (!corpus.includes(claim.toLowerCase())) unverified.push(`unverified-claim:${claim}`);
+    if (rawCorpus.includes(claim.toLowerCase())) continue;
+    const fc = foldToken(claim).toLowerCase();
+    if (fc && foldedCorpus.includes(fc)) continue;
+    unverified.push(`unverified-claim:${claim}`);
   }
   return { ok: unverified.length === 0, unverified };
 }
