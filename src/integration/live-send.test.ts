@@ -169,18 +169,18 @@ describe.skipIf(!ready)('Slice 2.5 live — LIVE send via fake Smartlead (zero r
     if (a.userId) await admin.auth.admin.deleteUser(a.userId);
   });
 
-  it('INSUFFICIENT credit (no grant) → failed, no push, no debit', async () => {
+  it('INSUFFICIENT credit (no grant) → DEFER (stays awaiting_approval), no push, no debit', async () => {
     const enr = (await admin.from('enrollments').select('*').eq('id', enrInsufficient).single())
       .data;
     const res = await executeSend(userDb(a.token), enr as never, fake);
     expect(res.outcome).toBe('insufficient_credit');
+    // Deferred, NOT terminally failed — a top-up + the send-redrive sweep must be able to complete it.
     const after = await admin
       .from('enrollments')
       .select('status, error')
       .eq('id', enrInsufficient)
       .single();
-    expect(after.data?.status).toBe('failed');
-    expect(after.data?.error).toBe('insufficient_credit');
+    expect(after.data?.status).toBe('awaiting_approval');
     expect(addLeadCalls.length).toBe(0); // nothing pushed
   }, 60_000);
 

@@ -410,13 +410,12 @@ export async function executeSend(
       return { outcome: 'verification_required' };
     }
 
-    // Credit ENFORCE (unlike dry-run): no balance → no send.
+    // Credit ENFORCE (unlike dry-run): no balance → no send. DEFER, don't fail: leave the
+    // enrollment 'awaiting_approval' (task still approved) so a top-up + the send-redrive sweep
+    // completes it — mirrors the rate_limited / campaign_paused / sender_paused defers. (A terminal
+    // 'failed' here was unrecoverable: a top-up could never resurrect it.)
     const credit = assessCredits(await creditBalance(db, org), SEND_COST);
     if (!credit.sufficient) {
-      await db
-        .from('enrollments')
-        .update({ status: 'failed', error: 'insufficient_credit' })
-        .eq('id', enrollment.id);
       return { outcome: 'insufficient_credit' };
     }
 
