@@ -156,7 +156,9 @@ export function createSmartleadClient(): SmartleadClient {
       });
     },
     async setStatus(campaignId, status): Promise<void> {
-      await send('PATCH', `/campaigns/${campaignId}/status`, { status });
+      // Smartlead's status endpoint is POST, not PATCH (PATCH now 404s "Cannot PATCH …/status";
+      // POST returns 200 — verified live 2026-07-06). This was the final provisioning-chain drift.
+      await send('POST', `/campaigns/${campaignId}/status`, { status });
     },
     async addLead(campaignId, lead: SmartleadLead): Promise<void> {
       // Idempotency note (C1): the AUTHORITATIVE same-send guard is Velora's claim-before-push in
