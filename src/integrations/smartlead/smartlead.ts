@@ -51,9 +51,16 @@ export function createSmartleadClient(): SmartleadClient {
       throw new AppError('Smartlead is unreachable', { code: 'smartlead_error', statusCode: 502 });
     }
     if (!res.ok) {
-      throw new AppError(`Smartlead request failed (${res.status})`, {
+      // Surface Smartlead's own error body (truncated) — self-diagnosing, like the Apollo adapter.
+      let detail = '';
+      try {
+        detail = (await res.text()).slice(0, 300);
+      } catch {
+        /* ignore body read failure */
+      }
+      throw new AppError(`Smartlead ${path} failed (${res.status})${detail ? `: ${detail}` : ''}`, {
         code: 'smartlead_error',
-        statusCode: 502,
+        statusCode: res.status === 429 ? 429 : 502,
       });
     }
     return res.json();
@@ -74,10 +81,18 @@ export function createSmartleadClient(): SmartleadClient {
       });
     }
     if (!res.ok) {
-      throw new AppError(`Smartlead ${method} ${path} failed (${res.status})`, {
-        code: 'smartlead_error',
-        statusCode: 502,
-      });
+      // Surface Smartlead's own error body (truncated) so a real provisioning/send failure is
+      // self-diagnosing rather than an opaque "(502)". Mirrors the Apollo adapter.
+      let detail = '';
+      try {
+        detail = (await res.text()).slice(0, 300);
+      } catch {
+        /* ignore body read failure */
+      }
+      throw new AppError(
+        `Smartlead ${method} ${path} failed (${res.status})${detail ? `: ${detail}` : ''}`,
+        { code: 'smartlead_error', statusCode: res.status === 429 ? 429 : 502 },
+      );
     }
     return res.json().catch(() => ({}));
   }

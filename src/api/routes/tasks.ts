@@ -124,7 +124,10 @@ export const tasksRoute: FastifyPluginAsync = async (app) => {
           }
         }
       } catch (err) {
-        request.log.error({ err, taskId: id }, 'executeSend after approval failed');
+        request.log.error(
+          { err, taskId: id },
+          `executeSend after approval failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
         send = 'error';
       }
     } else if (data.type === 'reply_approval') {
