@@ -122,14 +122,20 @@ export function createSmartleadClient(): SmartleadClient {
       return { id: String(res.id) };
     },
     async saveSequence(campaignId, subjectVar, bodyVar): Promise<void> {
-      await send('POST', `/campaigns/${campaignId}/sequences`, [
-        {
-          seq_number: 1,
-          seq_delay_details: { delay_in_days: 0 },
-          variant_distribution_type: 'MANUALLY_EQUAL',
-          variants: [{ subject: subjectVar, email_body: bodyVar, variant_label: 'A' }],
-        },
-      ]);
+      // Smartlead's CURRENT contract (verified live 2026-07-06): the body is an OBJECT
+      // { sequences: [...] } (a bare array 400s "value must be of type object"); variants live under
+      // `seq_variants` (`variants` 400s "not allowed"); and variant_distribution_type is
+      // 'MANUAL_EQUAL' ('MANUALLY_EQUAL' 406s "Unsupported value").
+      await send('POST', `/campaigns/${campaignId}/sequences`, {
+        sequences: [
+          {
+            seq_number: 1,
+            seq_delay_details: { delay_in_days: 0 },
+            variant_distribution_type: 'MANUAL_EQUAL',
+            seq_variants: [{ subject: subjectVar, email_body: bodyVar, variant_label: 'A' }],
+          },
+        ],
+      });
     },
     async assignEmailAccounts(campaignId, emailAccountIds): Promise<void> {
       await send('POST', `/campaigns/${campaignId}/email-accounts`, {
@@ -143,7 +149,10 @@ export function createSmartleadClient(): SmartleadClient {
         start_hour: '09:00',
         end_hour: '17:00',
         min_time_btw_emails: 10,
-        max_leads_per_day: maxLeadsPerDay,
+        // Smartlead renamed this field: max_leads_per_day → max_new_leads_per_day (verified live
+        // 2026-07-06; the old name 400s "max_new_leads_per_day is required", which then 500s START
+        // with "Cron Exp value is empty").
+        max_new_leads_per_day: maxLeadsPerDay,
       });
     },
     async setStatus(campaignId, status): Promise<void> {
