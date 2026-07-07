@@ -63,6 +63,15 @@ export const EnvSchema = z
     SMARTLEAD_API_KEY: z.string().optional(),
     SMARTLEAD_API_URL: z.string().default('https://server.smartlead.ai/api/v1'),
     SMARTLEAD_WEBHOOK_SECRET: z.string().optional(),
+    // Multi-tenant isolation kill-switch (Phase 2). Smartlead's list-email-accounts is account-GLOBAL
+    // (all orgs share one master key), so syncMailboxes adopts ONLY the accounts an org already owns
+    // (fail-closed — see src/agents/sending/mailbox-sync.ts). Default ON; set to 'false' ONLY as an
+    // emergency rollback (restores the old adopt-everything behavior = a cross-tenant leak). Any value
+    // other than the literal 'false' leaves the filter ON.
+    SMARTLEAD_SYNC_OWNED_ONLY: z
+      .string()
+      .optional()
+      .transform((v) => v !== 'false'),
 
     // Email verification (MillionVerifier) — Phase 2 Slice 2.4. Absent → verification skipped.
     MILLIONVERIFIER_API_KEY: z.string().optional(),

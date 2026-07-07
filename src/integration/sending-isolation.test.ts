@@ -27,25 +27,18 @@ describe.skipIf(!ready)('Slice 2.1 live — mailbox sync + sending tenant isolat
   const pwd = `Test-${stamp}-pw!`;
   const a = { orgId: '', userId: '', email: `s21+${stamp}-a@example.com`, token: '' };
   const b = { orgId: '', userId: '', email: `s21+${stamp}-b@example.com`, token: '' };
+  const c = { orgId: '', userId: '', email: `s21+${stamp}-c@example.com`, token: '' };
 
-  // Fake Smartlead client — returns two accounts + canned warmup stats. No network.
+  // Fake Smartlead client — returns the ACCOUNT-GLOBAL list: EVERY tenant's accounts under the shared
+  // master key (org A's 901/902 AND org B's 903/904). It is deliberately caller-BLIND, exactly like the
+  // real global key, so isolation MUST be enforced by syncMailboxes' ownership filter, not the list.
   const fake: SmartleadClient = {
     async listEmailAccounts() {
       return [
-        {
-          id: 901,
-          from_email: `mb1+${stamp}@get-x.com`,
-          type: 'GMAIL',
-          max_email_per_day: 30,
-          warmup_details: { status: 'ACTIVE', warmup_reputation: '100%' },
-        },
-        {
-          id: 902,
-          from_email: `mb2+${stamp}@get-x.com`,
-          type: 'OUTLOOK',
-          max_email_per_day: 25,
-          warmup_details: { status: 'ACTIVE' },
-        },
+        { id: 901, from_email: `mb1+${stamp}@get-a.com`, type: 'GMAIL', max_email_per_day: 30, warmup_details: { status: 'ACTIVE', warmup_reputation: '100%' } },
+        { id: 902, from_email: `mb2+${stamp}@get-a.com`, type: 'OUTLOOK', max_email_per_day: 25, warmup_details: { status: 'ACTIVE' } },
+        { id: 903, from_email: `mb3+${stamp}@get-b.com`, type: 'GMAIL', max_email_per_day: 40, warmup_details: { status: 'ACTIVE' } },
+        { id: 904, from_email: `mb4+${stamp}@get-b.com`, type: 'SMTP', max_email_per_day: 20, warmup_details: { status: 'ACTIVE' } },
       ];
     },
     async getWarmupStats() {
@@ -96,29 +89,43 @@ describe.skipIf(!ready)('Slice 2.1 live — mailbox sync + sending tenant isolat
   beforeAll(async () => {
     await makeOrgUser(a);
     await makeOrgUser(b);
+    await makeOrgUser(c);
   }, 120_000);
 
   afterAll(async () => {
     if (a.orgId) await admin.from('organizations').delete().eq('id', a.orgId);
     if (b.orgId) await admin.from('organizations').delete().eq('id', b.orgId);
+    if (c.orgId) await admin.from('organizations').delete().eq('id', c.orgId);
     if (a.userId) await admin.auth.admin.deleteUser(a.userId);
     if (b.userId) await admin.auth.admin.deleteUser(b.userId);
+    if (c.userId) await admin.auth.admin.deleteUser(c.userId);
   });
 
-  it('syncMailboxes upserts the org-scoped mailboxes from Smartlead (fake)', async () => {
+  it('connect-lane adoption: syncMailboxes adopts ONLY the allow-listed ids from the account-global list', async () => {
     const dbA = userDb(a.token);
-    const result = await syncMailboxes(dbA, a.orgId, fake);
+    // A connects its two mailboxes; the S3 connect lane passes their Smartlead ids as the adopt-allowlist.
+    const result = await syncMailboxes(dbA, a.orgId, fake, {
+      adoptAccountIds: ['901', '902'],
+      ownedOnly: true,
+    });
     expect(result.synced).toBe(2);
     const mbs = await dbA
       .from('mailboxes')
-      .select('email, provider, daily_cap, status, warmup_state');
-    expect((mbs.data ?? []).length).toBe(2);
+      .select('provider, daily_cap, status, smartlead_email_account_id');
+    const ids = (mbs.data ?? []).map((m) => String(m.smartlead_email_account_id)).sort();
+    expect(ids).toEqual(['901', '902']); // NOT 903/904 — though the global fake returned all four
     const m1 = (mbs.data ?? []).find((m) => m.provider === 'gmail');
     expect(m1?.daily_cap).toBe(30);
     expect(m1?.status).toBe('warming');
-    // idempotent re-sync → still 2 (upsert by org+email)
-    await syncMailboxes(dbA, a.orgId, fake);
-    expect(((await dbA.from('mailboxes').select('id')).data ?? []).length).toBe(2);
+  }, 60_000);
+
+  it('idempotent re-sync keeps owned, adopts no other tenant’s accounts', async () => {
+    const dbA = userDb(a.token);
+    await syncMailboxes(dbA, a.orgId, fake, { ownedOnly: true }); // no adopt list this time
+    const ids = ((await dbA.from('mailboxes').select('smartlead_email_account_id')).data ?? [])
+      .map((m) => String(m.smartlead_email_account_id))
+      .sort();
+    expect(ids).toEqual(['901', '902']); // still exactly A's two; 903/904 never adopted
   }, 60_000);
 
   it('refreshMailboxWarmup writes the reputation blob', async () => {
@@ -135,13 +142,36 @@ describe.skipIf(!ready)('Slice 2.1 live — mailbox sync + sending tenant isolat
     expect(after.data?.last_synced_at).toBeTruthy();
   }, 60_000);
 
-  it('CROSS-TENANT: org B sees none of org A’s mailboxes and cannot sync into org A', async () => {
+  it('TENANT LEAK BLOCKED (fail-closed): an org that owns nothing adopts NOTHING from the global list', async () => {
     const dbB = userDb(b.token);
     expect(((await dbB.from('mailboxes').select('id')).data ?? []).length).toBe(0);
-    // org B syncing under its own org never touches org A's rows
-    await syncMailboxes(dbB, b.orgId, fake);
-    const aCount = ((await userDb(a.token).from('mailboxes').select('id')).data ?? []).length;
-    expect(aCount).toBe(2); // unchanged by org B's sync
+    // B plain-syncs against the 4-account global fake with no ownership → adopts 0. Under the pre-Phase-2
+    // code this would have pulled ALL FOUR (incl. org A's) into org B — the exact leak this closes.
+    const res = await syncMailboxes(dbB, b.orgId, fake, { ownedOnly: true });
+    expect(res.synced).toBe(0);
+    expect(((await dbB.from('mailboxes').select('id')).data ?? []).length).toBe(0);
+  }, 60_000);
+
+  it('TENANT ISOLATION (disjoint): B adopts only its own; A and B mailbox sets share nothing', async () => {
+    const dbB = userDb(b.token);
+    await syncMailboxes(dbB, b.orgId, fake, { adoptAccountIds: ['903', '904'], ownedOnly: true });
+    const bIds = ((await dbB.from('mailboxes').select('smartlead_email_account_id')).data ?? [])
+      .map((m) => String(m.smartlead_email_account_id))
+      .sort();
+    expect(bIds).toEqual(['903', '904']);
+    const aIds = ((await userDb(a.token).from('mailboxes').select('smartlead_email_account_id')).data ?? [])
+      .map((m) => String(m.smartlead_email_account_id))
+      .sort();
+    expect(aIds).toEqual(['901', '902']); // A untouched by B's sync
+    expect(aIds.filter((x) => bIds.includes(x))).toEqual([]); // provably disjoint — the isolation proof
+  }, 60_000);
+
+  it('KILL-SWITCH (ownedOnly=false) restores legacy adopt-ALL — proves the flag gates the filter', async () => {
+    const dbC = userDb(c.token);
+    // Filter OFF → a plain sync adopts EVERY account in the global list (the pre-Phase-2 leak behavior).
+    const res = await syncMailboxes(dbC, c.orgId, fake, { ownedOnly: false });
+    expect(res.synced).toBe(4);
+    expect(((await dbC.from('mailboxes').select('id')).data ?? []).length).toBe(4);
   }, 60_000);
 
   it('domains + senders CRUD round-trip under RLS; cross-tenant blocked', async () => {

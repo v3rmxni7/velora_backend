@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import type { SmartleadEmailAccount } from '../../integrations/smartlead/types.js';
 import {
   classifyWarmth,
+  filterToOwnedAccounts,
   MIN_WARMUP_SENT,
   mapAccountToMailboxRow,
   mapProvider,
@@ -53,6 +55,29 @@ describe('mapAccountToMailboxRow', () => {
     expect(row.daily_cap).toBeNull();
     expect(row.warmup_state).toBeNull();
     expect(row.status).toBe('connected');
+  });
+});
+
+// Phase-2 tenant isolation: the account-GLOBAL Smartlead list must be filtered to owned ids ONLY.
+// This is the core leak-closing gate; unit-tested here so a regression is caught in ordinary CI.
+describe('filterToOwnedAccounts (Phase-2 tenant isolation)', () => {
+  const acct = (id: number | string): SmartleadEmailAccount =>
+    ({ id, from_email: `mb${id}@x.com` }) as SmartleadEmailAccount;
+  const global = [acct(901), acct(902), acct(903), acct(904)]; // account-global list (multiple tenants)
+
+  it('keeps only accounts whose id is in the owned set', () => {
+    const kept = filterToOwnedAccounts(global, new Set(['901', '902']));
+    expect(kept.map((a) => String(a.id))).toEqual(['901', '902']); // 903/904 (other tenant) dropped
+  });
+  it('fail-closed: an empty owned set adopts nothing', () => {
+    expect(filterToOwnedAccounts(global, new Set())).toEqual([]);
+  });
+  it('matches number ids against string owned ids (no type mismatch)', () => {
+    expect(filterToOwnedAccounts([acct(901)], new Set(['901']))).toHaveLength(1);
+    expect(filterToOwnedAccounts([acct('901')], new Set(['901']))).toHaveLength(1);
+  });
+  it('never invents an account not in the global list', () => {
+    expect(filterToOwnedAccounts([acct(901)], new Set(['901', '999']))).toHaveLength(1);
   });
 });
 

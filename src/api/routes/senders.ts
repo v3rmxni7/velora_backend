@@ -220,10 +220,31 @@ export const sendersRoute: FastifyPluginAsync<SendersRouteOptions> = async (app,
         detail: { smtp: created.smtpOk, imap: created.imapOk },
       });
     }
+    // Defense-in-depth (tenant isolation): /email-accounts/save is a server-side UPSERT, so in the
+    // pathological case it could alias to an account another workspace already owns. Before adopting
+    // it, refuse if that Smartlead id is already owned by a DIFFERENT org. Needs the service-role client
+    // (RLS hides other tenants' mailboxes); absent (dev/sandbox) → skip.
+    const admin = getSupabaseAdmin();
+    if (admin) {
+      const clash = await admin
+        .from('mailboxes')
+        .select('organization_id')
+        .eq('smartlead_email_account_id', String(created.id))
+        .neq('organization_id', organizationId)
+        .limit(1);
+      if (clash.error) throw clash.error;
+      if ((clash.data ?? []).length > 0) {
+        return reply.code(409).send({
+          error: 'mailbox_already_connected',
+          detail: 'This mailbox is already connected to another workspace.',
+        });
+      }
+    }
     await sl.enableWarmup(created.id);
-    // Idempotent upsert of the new account into mailboxes (+ enqueues the warmup refresh). It lands
-    // 'warming'/'connected', never 'warm'.
-    await syncMailboxes(db, organizationId, sl);
+    // Idempotent upsert of the new account into mailboxes. It lands 'warming'/'connected', never 'warm'.
+    // Pass the just-created id as the adopt-allowlist: under the Phase-2 tenant filter this account has
+    // no mailbox row yet, so this is what authorizes THIS org to adopt it (ownership by connect lane).
+    await syncMailboxes(db, organizationId, sl, { adoptAccountIds: [String(created.id)] });
 
     // Audit the connect WITHOUT any credential — only the non-secret identity + the Smartlead id.
     await recordAuditSafe(getSupabaseAdmin(), {

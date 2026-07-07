@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { env } from '../../config/env.js';
 import type {
   SmartleadClient,
   SmartleadEmailAccount,
@@ -101,16 +102,55 @@ export function classifyWarmth(
   return 'warming';
 }
 
-/** Pull Smartlead accounts into mailboxes (upsert by org+email). Returns synced mailbox ids. */
+/**
+ * Pure: the tenant-isolation gate — keep only accounts whose Smartlead id is in the owned set (this
+ * org's existing mailbox ids ∪ the connect-lane adopt-allowlist). Everything else belongs to another
+ * tenant under the shared master key and is dropped. Extracted + unit-tested so a regression is caught
+ * in ordinary CI, not only under the RUN_DB_IT integration pass.
+ */
+export function filterToOwnedAccounts(
+  accounts: SmartleadEmailAccount[],
+  ownedIds: ReadonlySet<string>,
+): SmartleadEmailAccount[] {
+  return accounts.filter((a) => ownedIds.has(String(a.id)));
+}
+
+/**
+ * Pull Smartlead accounts into mailboxes (upsert by org+email). Returns synced mailbox ids.
+ *
+ * TENANT ISOLATION (Phase 2): Smartlead's list-email-accounts is account-GLOBAL — all orgs share one
+ * master key, so the raw list contains EVERY tenant's mailboxes. Adopting it wholesale would let one
+ * org pull another org's mailboxes (a cross-tenant leak RLS can't stop, since the written row is
+ * legitimately this org's). So we adopt ONLY accounts this org already owns (its existing mailbox rows)
+ * plus any explicitly just-connected id (`opts.adoptAccountIds`, from the S3 connect lane — that
+ * account has no mailbox row yet). Anything else is NEVER adopted. Fail-closed. The filter is gated by
+ * `env.SMARTLEAD_SYNC_OWNED_ONLY` (default on; `opts.ownedOnly` overrides for tests).
+ */
 export async function syncMailboxes(
   db: SupabaseClient,
   organizationId: string,
   client: SmartleadClient,
+  opts: { adoptAccountIds?: string[]; ownedOnly?: boolean } = {},
 ): Promise<{ synced: number; mailboxIds: string[] }> {
+  const ownedOnly = opts.ownedOnly ?? env.SMARTLEAD_SYNC_OWNED_ONLY;
   const accounts = await client.listEmailAccounts();
-  const rows = accounts
-    .filter((a) => typeof a.from_email === 'string' && a.from_email.length > 0)
-    .map((a) => mapAccountToMailboxRow(a, organizationId));
+  let candidate = accounts.filter(
+    (a) => typeof a.from_email === 'string' && a.from_email.length > 0,
+  );
+  if (ownedOnly) {
+    const owned = new Set<string>((opts.adoptAccountIds ?? []).map(String));
+    const existing = await db
+      .from('mailboxes')
+      .select('smartlead_email_account_id')
+      .eq('organization_id', organizationId)
+      .not('smartlead_email_account_id', 'is', null);
+    if (existing.error) throw existing.error;
+    for (const r of existing.data ?? []) {
+      if (r.smartlead_email_account_id != null) owned.add(String(r.smartlead_email_account_id));
+    }
+    candidate = filterToOwnedAccounts(candidate, owned);
+  }
+  const rows = candidate.map((a) => mapAccountToMailboxRow(a, organizationId));
   if (rows.length === 0) return { synced: 0, mailboxIds: [] };
   const up = await db
     .from('mailboxes')
