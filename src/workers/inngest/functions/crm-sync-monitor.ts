@@ -22,6 +22,22 @@ export const crmSyncMonitor = inngest.createFunction(
     step.run('sweep', async () => {
       const db = getSupabaseAdmin();
       if (!db) throw new Error('Supabase admin client not configured');
-      return runCrmSync(db, (provider, oauth) => getCrmClient(env, provider, oauth));
+      // Prod factory: bind a persist callback (service-role) so a rotated HubSpot refresh_token is
+      // written back to THIS integration's vault row. Fires only when the token actually rotates.
+      return runCrmSync(db, (provider, oauth, integrationId) =>
+        getCrmClient(env, provider, oauth, {
+          persist: async (o) => {
+            // Check the write: supabase-js does NOT throw on a DB error, so an unchecked update would
+            // SILENTLY drop a rotated refresh_token (the in-memory token advances, the vault keeps the
+            // stale one → the next sweep 400s). Throw so runCrmSync records status='error' (visible,
+            // token-free) and the tenant is prompted to reconnect, instead of a silent break.
+            const { error } = await db
+              .from('integration_secrets')
+              .update({ oauth: o })
+              .eq('integration_id', integrationId);
+            if (error) throw error;
+          },
+        }),
+      );
     }),
 );

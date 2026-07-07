@@ -93,7 +93,9 @@ export const integrationsRoute: FastifyPluginAsync = async (app) => {
     );
     if (sec.error) throw sec.error;
 
-    const redirectUri = `${requestOrigin(request)}/integrations/crm/callback`;
+    // Must EXACTLY match the redirect_uri used at token exchange + the one registered on the app.
+    const redirectUri =
+      env.HUBSPOT_REDIRECT_URI ?? `${requestOrigin(request)}/integrations/crm/callback`;
     return { data: { authorizeUrl: buildAuthorizeUrl(provider, creds, redirectUri, state) } };
   });
 

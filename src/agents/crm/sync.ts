@@ -51,9 +51,15 @@ export interface SyncResult {
 
 export type ContactOutcome = 'enrolled' | 'synced' | 'skipped_no_email' | 'org_mismatch';
 
-/** A factory the caller supplies — `getCrmClient(env, provider, oauth)` in prod (null → no-op), or a
- * FakeCrmClient in tests. The tokens (oauth) are read service-role by the caller; this fn never logs them. */
-export type GetClient = (provider: string, oauth: unknown) => CrmClient | null;
+/** A factory the caller supplies — `getCrmClient(env, provider, oauth, {persist})` in prod (null →
+ * no-op), or a FakeCrmClient in tests. `integrationId` lets the prod factory bind a persist callback
+ * (for a rotated refresh_token) to the right vault row. Tokens are read service-role by the caller;
+ * this fn never logs them. */
+export type GetClient = (
+  provider: string,
+  oauth: unknown,
+  integrationId: string,
+) => CrmClient | null;
 
 /**
  * Sweep connected CRM integrations and sync each (the monitor cron's core; a plain function tests call
@@ -80,7 +86,7 @@ export async function runCrmSync(db: SupabaseClient, getClient: GetClient): Prom
         .eq('integration_id', intg.id)
         .maybeSingle();
       if (secrets.error) throw secrets.error;
-      const client = getClient(intg.provider, secrets.data?.oauth ?? null);
+      const client = getClient(intg.provider, secrets.data?.oauth ?? null, intg.id);
       if (!client) continue; // 🔌 not connected / no real client → no-op (never an error)
 
       const page = await client.listContacts(intg.sync_cursor ?? undefined);

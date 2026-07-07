@@ -12,9 +12,9 @@ import { verifyState } from '../../lib/oauth-state.js';
 // separately+last (like pixel.ts / webhooks.ts) so it NEVER inherits the authed integrations route's
 // `authenticate` preHandler. The org rides a SIGNED state (HMAC), verified + SINGLE-USE-consumed here
 // (a replayed/expired/used state is rejected — CSRF/replay-safe); the org is resolved from the state,
-// never the query. The code→token exchange is GATED on configured creds and is 🔌 deferred (no real
-// exchange in 4.7 → status='error', never a fake 'connected'/token). In the demo, /connect returns
-// 'not_configured' first, so this callback's exchange path is dormant.
+// never the query. The code→token exchange is GATED on configured creds (HubSpot is REAL as of T1 —
+// a null result → status='error', never a fake 'connected'/token). Absent creds, /connect returns
+// 'not_configured' first, so this callback stays dormant (the demo/unconfigured posture).
 
 function frontendOrigin(request: FastifyRequest): string {
   const c = env.CORS_ORIGIN;
@@ -77,8 +77,10 @@ export const integrationsOAuthRoute: FastifyPluginAsync = async (app) => {
       return back('denied');
     }
 
-    // Exchange code→token — gated on creds + 🔌 deferred (returns null in 4.7 → never a fake token).
-    const redirectUri = `${request.protocol}://${request.headers.host ?? ''}/integrations/crm/callback`;
+    // Exchange code→token (HubSpot real in T1). redirect_uri MUST exactly match the connect + the app.
+    const redirectUri =
+      env.HUBSPOT_REDIRECT_URI ??
+      `${request.protocol}://${request.headers.host ?? ''}/integrations/crm/callback`;
     const creds = getCrmOAuthCreds(env, provider);
     const result = creds ? await exchangeOAuthCode(env, provider, q.code, redirectUri) : null;
     if (!result) {

@@ -108,6 +108,10 @@ export const EnvSchema = z
     // service-role integration_secrets vault, never on a client-readable column.
     HUBSPOT_CLIENT_ID: z.string().optional(),
     HUBSPOT_CLIENT_SECRET: z.string().optional(),
+    // The OAuth redirect URI, which MUST exactly match the one registered on the HubSpot app (exact
+    // string, https, a domain). Absent → the connect/callback derive it from the request origin (fine
+    // in simple setups, but a proxy can drift the scheme/host); set it explicitly at go-live. (T1)
+    HUBSPOT_REDIRECT_URI: z.string().optional(),
     SALESFORCE_CLIENT_ID: z.string().optional(),
     SALESFORCE_CLIENT_SECRET: z.string().optional(),
     OAUTH_STATE_SECRET: z.string().optional(),
