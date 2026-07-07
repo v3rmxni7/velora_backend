@@ -155,11 +155,24 @@ export async function refreshMailboxWarmup(
   const status = String(mb.data?.status ?? '');
   const warmupActive = status === 'warming' || status === 'warm';
   const override = mb.data?.warmup_override === true;
+  const newStatus = classifyWarmth(
+    reputation as { sent?: number; spam?: number },
+    warmupActive,
+    override,
+  );
+  // The established-mailbox override skips the warm-up VOLUME threshold, but must NEVER override the
+  // spam-rate SAFETY. The ONLY way an override'd mailbox is not 'warm' here is a tripped spam ceiling
+  // (classifyWarmth: override → 'warm' iff spamRate ≤ MAX_SPAM_RATE). When that happens, CLEAR the
+  // override so the demotion is DURABLE — otherwise syncMailboxes' re-warm + the owner-gate exemption
+  // would silently re-warm a spam-flagged mailbox. The owner must deliberately re-attest (owner-gated)
+  // after fixing deliverability. This runs service-role (warmup monitor), so the owner trigger bypasses.
+  const clearOverride = override && newStatus !== 'warm';
   const upd = await db
     .from('mailboxes')
     .update({
       reputation,
-      status: classifyWarmth(reputation as { sent?: number; spam?: number }, warmupActive, override),
+      status: newStatus,
+      ...(clearOverride ? { warmup_override: false } : {}),
       last_synced_at: new Date().toISOString(),
     })
     .eq('id', mailboxId);

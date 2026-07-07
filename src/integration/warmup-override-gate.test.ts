@@ -1,9 +1,32 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import Fastify from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { refreshMailboxWarmup } from '../agents/sending/mailbox-sync.js';
 import { sendersRoute } from '../api/routes/senders.js';
 import { env } from '../config/env.js';
 import { createUserClient } from '../db/user-client.js';
+import type { SmartleadClient } from '../integrations/smartlead/types.js';
+
+// A fake Smartlead client whose warmup stats we control (to drive classifyWarmth's spam ceiling).
+function fakeWarmupClient(sent: number, spam: number): SmartleadClient {
+  return {
+    async listEmailAccounts() {
+      return [];
+    },
+    async getWarmupStats() {
+      return { sent_count: sent, spam_count: spam } as never;
+    },
+    async createCampaign() {
+      return { id: 'x' };
+    },
+    async saveSequence() {},
+    async assignEmailAccounts() {},
+    async setSchedule() {},
+    async setStatus() {},
+    async addLead() {},
+    async sendReply() {},
+  };
+}
 
 // S2 — the mailbox warmup-override owner gate (RUN_DB_IT). warmup_override / status='warm' GRANT a
 // mailbox send-eligibility without warm-up proof, so they must be an OWNER act. The route gives a clean
@@ -186,5 +209,22 @@ describe.skipIf(!ready)('S2 — mailbox warmup-override owner gate', () => {
       .select('id');
     expect(upd.error).toBeNull();
     expect((await readMb()).warmup_override).toBe(true);
+  });
+
+  it('SPAM CEILING wins over override — a refresh that trips the spam rate CLEARS the override (durable demotion)', async () => {
+    await reset({ warmup_override: true, status: 'warm' });
+    // 20% spam rate (> MAX_SPAM_RATE) on an owner-attested mailbox.
+    await refreshMailboxWarmup(admin, fakeWarmupClient(1000, 200), mbId);
+    const mb = await readMb();
+    expect(mb.status).toBe('warming'); // demoted by the spam ceiling
+    expect(mb.warmup_override).toBe(false); // AND the override cleared → demotion is durable
+  });
+
+  it('a HEALTHY refresh keeps an override mailbox warm and KEEPS the override', async () => {
+    await reset({ warmup_override: true, status: 'warm' });
+    await refreshMailboxWarmup(admin, fakeWarmupClient(1000, 0), mbId); // 0% spam
+    const mb = await readMb();
+    expect(mb.status).toBe('warm');
+    expect(mb.warmup_override).toBe(true); // override preserved when healthy
   });
 });
