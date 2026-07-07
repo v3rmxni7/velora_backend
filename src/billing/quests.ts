@@ -112,8 +112,11 @@ export const QUEST_CATALOG: QuestDef[] = [
     href: '/connections',
   },
   {
+    // Autopilot (autonomy) is enabled deliberately as a staff-reviewed graduation step, never a
+    // self-serve toggle (the anti-abuse gate + the two-flag safety model). The label reflects that —
+    // it must NOT imply a button exists to flip. Completion is still derived from real autonomy state.
     key: 'turn-on-autopilot',
-    label: 'Turn on autopilot',
+    label: 'Graduate to autopilot',
     reward: 400,
     group: 'activation',
     href: '/manage',
