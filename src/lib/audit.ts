@@ -13,6 +13,7 @@ export type AuditKind =
   | 'postal_address_updated'
   | 'sending_go_live'
   | 'sending_paused'
+  | 'mailbox_warmup_override_set'
   | 'retention_reported'
   | 'retention_purged';
 

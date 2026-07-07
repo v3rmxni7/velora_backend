@@ -5,7 +5,7 @@ import { getSupabaseAdmin } from '../../db/client.js';
 import { createSmartleadClient } from '../../integrations/smartlead/smartlead.js';
 import { recordAuditSafe } from '../../lib/audit.js';
 import { events, inngest } from '../../workers/inngest/client.js';
-import { authenticate, requireAuth } from '../middleware/auth.js';
+import { authenticate, requireAuth, requireRole } from '../middleware/auth.js';
 
 const CreateSender = z.object({ displayName: z.string().min(1).max(200) });
 const CreateDomain = z.object({ domain: z.string().min(3).max(253) });
@@ -141,12 +141,16 @@ export const sendersRoute: FastifyPluginAsync = async (app) => {
     return { data };
   });
 
-  // Established-mailbox attestation (4.x — the warm-up fast lane). An operator marks a real, in-use
+  // Established-mailbox attestation (4.x — the warm-up fast lane). An OWNER marks a real, in-use
   // mailbox as ready-to-send without waiting for the warm-up SEND threshold. Deliberate send-safety
   // act: setting it true forces 'warm' immediately (still spam-ceiling-checked on future refreshes,
   // via classifyWarmth's override branch); clearing it drops back to 'warming' to re-prove.
+  // OWNER-only (S2): the route requireRole gives a clean 403, and the mailboxes_owner_send_eligibility
+  // DB trigger is the real boundary (mailboxes has an authenticated UPDATE RLS policy, so a member
+  // could otherwise flip it directly via PostgREST). Audited as mailbox_warmup_override_set.
   app.patch('/mailboxes/:id/warmup-override', async (request, reply) => {
-    const { db } = requireAuth(request);
+    const { db, organizationId, userId } = requireAuth(request);
+    requireRole(request, ['owner']);
     const { id } = IdParam.parse(request.params);
     const { override } = WarmupOverride.parse(request.body);
     const { data, error } = await db
@@ -157,6 +161,13 @@ export const sendersRoute: FastifyPluginAsync = async (app) => {
       .maybeSingle();
     if (error) throw error;
     if (!data) return reply.code(404).send({ error: 'not_found' });
+    await recordAuditSafe(getSupabaseAdmin(), {
+      organizationId,
+      kind: 'mailbox_warmup_override_set',
+      userId,
+      args: { mailboxId: id, override },
+      source: 'user',
+    });
     return { data };
   });
 
