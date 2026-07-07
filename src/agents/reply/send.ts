@@ -1,11 +1,20 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { env } from '../../config/env.js';
 import { getSupabaseAdmin } from '../../db/client.js';
 import { createSmartleadClient } from '../../integrations/smartlead/smartlead.js';
 import type { SmartleadClient } from '../../integrations/smartlead/types.js';
 import { getAutonomyMode, recordAutonomyEvent } from '../../lib/autonomy-mode.js';
 import { getSendingMode } from '../../lib/sending-mode.js';
+import { resolveCompliantBody } from '../sending/compliance-footer.js';
 import { bestEffortSendDebit } from '../sending/credit-debit.js';
-import { isCampaignActive, isSenderActive, isSuppressed, SEND_COST } from '../sending/pipeline.js';
+import {
+  type ComplianceEnv,
+  isCampaignActive,
+  isSenderActive,
+  isSuppressed,
+  orgPostalAddress,
+  SEND_COST,
+} from '../sending/pipeline.js';
 import { decideReplyAutoSend } from './auto-reply.js';
 
 // Phase 3 Slice 3.4 — the REPLY send chokepoint. Mirrors executeSend's gate discipline for the most
@@ -24,6 +33,7 @@ export type ReplySendOutcome =
   | 'campaign_paused'
   | 'sender_paused'
   | 'invalid'
+  | 'compliance_blocked'
   | 'duplicate'
   | 'skipped'
   | 'error';
@@ -48,6 +58,7 @@ export async function executeReplySend(
   db: SupabaseClient,
   taskId: string,
   client?: SmartleadClient,
+  compliance: ComplianceEnv = { baseUrl: env.PUBLIC_BASE_URL, secret: env.UNSUBSCRIBE_SECRET },
 ): Promise<{ outcome: ReplySendOutcome; messageId?: string }> {
   const taskRes = await db
     .from('tasks')
@@ -90,7 +101,9 @@ export async function executeReplySend(
   if (!(await isSenderActive(db, task.campaign_id))) return { outcome: 'sender_paused' };
 
   const dedupeKey = `reply_send:${org}:${taskId}`;
-  const claim = async (status: 'dry_run' | 'queued') => {
+  // bodyToStore lets the LIVE path persist the compliance-footed body (stored == delivered); dry-run
+  // stores the raw draft (nothing is delivered, so no footer needed and the demo path is unchanged).
+  const claim = async (status: 'dry_run' | 'queued', bodyToStore: string | null = task.body) => {
     const ins = await db
       .from('messages')
       .upsert(
@@ -101,7 +114,7 @@ export async function executeReplySend(
           direction: 'outbound',
           channel: 'email',
           subject: task.subject,
-          body: task.body,
+          body: bodyToStore,
           status,
           dedupe_key: dedupeKey,
           sent_at: new Date().toISOString(),
@@ -128,6 +141,20 @@ export async function executeReplySend(
 
   // ===== LIVE — the irreversible path. Only on a deliberate two-flag flip. =====
   if (mode.sendingEnabled && !mode.dryRun) {
+    // L1 — COMPLIANCE FAIL-CLOSED GATE (same discipline as executeSend). A live reply is a commercial
+    // message too; it MUST carry the physical postal address + a working unsubscribe link. Block (no
+    // push, no claim) when the org has no postal address or the unsubscribe link can't be minted.
+    // Live-branch only — dry-run never reaches here. DEFER (write nothing, task stays approved) so a
+    // set-address + retry completes it. task.body is non-empty here (the M7 guard ran above).
+    const compliant = resolveCompliantBody(task.body ?? '', {
+      postalAddress: await orgPostalAddress(db, org),
+      baseUrl: compliance.baseUrl,
+      secret: compliance.secret,
+      organizationId: org,
+      email: recipient,
+    });
+    if (!compliant.ok) return { outcome: 'compliance_blocked' };
+
     // C1 pre-check — a retry whose reply was already claimed returns 'duplicate' before any push.
     const pre = await db
       .from('messages')
@@ -156,8 +183,9 @@ export async function executeReplySend(
       .maybeSingle();
     const inReplyToMessageId = (inbound.data?.smartlead_message_id as string | null) ?? null;
 
-    // C1 — CLAIM BEFORE PUSH: only the creator of the dedupe row may push.
-    const { messageId, created } = await claim('queued');
+    // C1 — CLAIM BEFORE PUSH: only the creator of the dedupe row may push. Store the compliance-footed
+    // body so the persisted message equals what is delivered.
+    const { messageId, created } = await claim('queued', compliant.body);
     if (!created) return { outcome: 'duplicate', messageId };
 
     const sl = client ?? createSmartleadClient();
@@ -165,7 +193,7 @@ export async function executeReplySend(
       await sl.sendReply(String(campaign.data.smartlead_campaign_id), {
         email: recipient,
         subject: task.subject,
-        body: task.body,
+        body: compliant.body,
         inReplyToMessageId,
       });
     } catch (err) {

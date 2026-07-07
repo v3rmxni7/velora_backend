@@ -5,12 +5,13 @@ import { createSmartleadClient } from '../../integrations/smartlead/smartlead.js
 import type { SmartleadClient } from '../../integrations/smartlead/types.js';
 import { createMillionVerifier } from '../../integrations/verifier/millionverifier.js';
 import type { EmailVerifier } from '../../integrations/verifier/types.js';
-import { AppError } from '../../lib/errors.js';
 import { orgCreditBalance } from '../../lib/credit-balance.js';
+import { AppError } from '../../lib/errors.js';
 import { assertLiveSendAllowed, getSendingMode } from '../../lib/sending-mode.js';
 import type { GenerateDeps, LeadType } from '../draft/generate.js';
 import { runDraftGeneration } from '../draft/task.js';
 import { enrichPersonLead } from '../leads/enrich.js';
+import { resolveCompliantBody } from './compliance-footer.js';
 import { bestEffortSendDebit } from './credit-debit.js';
 import { ensureSmartleadCampaign } from './provision.js';
 
@@ -238,12 +239,34 @@ export type SendOutcome =
   | 'rate_limited'
   | 'halted'
   | 'invalid'
+  | 'compliance_blocked'
   | 'duplicate'
   | 'skipped';
 
 export interface SendCaps {
   perOrg: number;
   global: number;
+}
+
+/** Injected compliance config (defaults to env). Lets tests exercise the fail-closed guard without
+ *  mutating the frozen env import — mirrors the `caps` injection. */
+export interface ComplianceEnv {
+  baseUrl?: string;
+  secret?: string;
+}
+
+/** The org's physical postal address (CAN-SPAM). Null when unset → a live send fails closed. */
+export async function orgPostalAddress(
+  db: SupabaseClient,
+  organizationId: string,
+): Promise<string | null> {
+  const { data, error } = await db
+    .from('organizations')
+    .select('postal_address')
+    .eq('id', organizationId)
+    .maybeSingle();
+  if (error) throw error;
+  return (data?.postal_address as string | null) ?? null;
 }
 /** Pure: is a send over either daily ceiling? (Counts are "already sent today".) */
 export function assessSendRate(orgCount: number, globalCount: number, caps: SendCaps): boolean {
@@ -353,6 +376,7 @@ export async function executeSend(
   enrollment: EnrollmentRecord,
   client?: SmartleadClient,
   caps?: SendCaps,
+  compliance: ComplianceEnv = { baseUrl: env.PUBLIC_BASE_URL, secret: env.UNSUBSCRIBE_SECRET },
 ): Promise<{ outcome: SendOutcome; messageId?: string }> {
   if (!enrollment.task_id) return { outcome: 'skipped' };
   const org = enrollment.organization_id;
@@ -443,6 +467,26 @@ export async function executeSend(
       return { outcome: 'skipped' };
     }
 
+    // L1 — COMPLIANCE FAIL-CLOSED GATE. Every live send MUST carry a physical postal address
+    // (CAN-SPAM) + a working unsubscribe link. Compose the footer now (before provisioning/claim) and
+    // block if the org has no postal address, or if the Velora-hosted unsubscribe link can't be minted
+    // (PUBLIC_BASE_URL / UNSUBSCRIBE_SECRET unset). This is an ADDITIONAL gate that runs ONLY inside
+    // the live branch (dry-run never reaches here) — it never loosens the two-flag invariant. DEFER
+    // (leave awaiting_approval, write nothing) so setting the address / env + the redrive sweep
+    // completes the send; a missing address is recoverable, not a terminal failure.
+    const compliant = resolveCompliantBody(draft.body ?? '', {
+      postalAddress: await orgPostalAddress(db, org),
+      baseUrl: compliance.baseUrl,
+      secret: compliance.secret,
+      organizationId: org,
+      email: recipient,
+    });
+    if (!compliant.ok) {
+      return { outcome: 'compliance_blocked' };
+    }
+    // From here the delivered body == the stored body == draft.body + the compliance footer.
+    const compliantDraft: ApprovedDraft = { ...draft, body: compliant.body };
+
     // Service-role client — required for the cross-org rate count and the credit debit.
     const admin = getSupabaseAdmin();
     if (!admin) {
@@ -519,7 +563,7 @@ export async function executeSend(
     // C1 — CLAIM BEFORE PUSH. Write the dedupe message; only the creator (created === true) may
     // push. Any concurrent/retry caller sees created === false and refuses to re-send (at-most-once:
     // the dedupe key GATES the push rather than following it, so a crash/retry never double-sends).
-    const { messageId, created } = await recordOutbound(db, enrollment, draft, {
+    const { messageId, created } = await recordOutbound(db, enrollment, compliantDraft, {
       messageStatus: 'queued',
       enrollmentStatus: 'queued',
       gates,
@@ -533,7 +577,7 @@ export async function executeSend(
     try {
       await sl.addLead(smartleadCampaignId, {
         email: recipient,
-        custom_fields: { velora_subject: draft.subject ?? '', velora_body: draft.body ?? '' },
+        custom_fields: { velora_subject: draft.subject ?? '', velora_body: compliant.body },
       });
     } catch (err) {
       await db

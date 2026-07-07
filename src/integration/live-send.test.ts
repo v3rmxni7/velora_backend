@@ -45,7 +45,13 @@ describe.skipIf(!ready)('Slice 2.5 live — LIVE send via fake Smartlead (zero r
   let enrNullSender = '';
   let enrInsufficient = '';
   let enrSuccess = '';
+  let enrCompliance = '';
   const leadBEmail = `leadb+${stamp}@example.com`;
+  // L1 compliance — a real physical postal address for the org, and an injected unsubscribe config
+  // (PUBLIC_BASE_URL / UNSUBSCRIBE_SECRET are read from the frozen env by default, so tests pass them
+  // explicitly — mirrors the `caps` injection). The live send fails closed without these.
+  const ADDRESS = 'HelloAgentic, 123 Example St, Bengaluru 560001, India';
+  const COMPLIANCE = { baseUrl: 'https://api.test.example', secret: 'test-unsub-secret' };
 
   const addLeadCalls: { email: string; custom_fields: Record<string, string> }[] = [];
   const fake: SmartleadClient = {
@@ -181,17 +187,20 @@ describe.skipIf(!ready)('Slice 2.5 live — LIVE send via fake Smartlead (zero r
     nullSenderCampaignId = campNull.data.id as string;
     enrInsufficient = await enroll(await person(`s25ins:${stamp}`, `ins+${stamp}@x.com`));
     enrSuccess = await enroll(await person(`s25ok:${stamp}`, leadBEmail));
+    enrCompliance = await enroll(await person(`s25comp:${stamp}`, `comp+${stamp}@x.com`));
     enrNullSender = await enroll(
       await person(`s25nosender:${stamp}`, `nosender+${stamp}@x.com`),
       nullSenderCampaignId,
     );
     await prepareAndApprove(enrInsufficient);
     await prepareAndApprove(enrSuccess);
+    await prepareAndApprove(enrCompliance);
     await prepareAndApprove(enrNullSender);
-    // THE DELIBERATE FLIP — for THIS test org only. Demo org is never touched.
+    // THE DELIBERATE FLIP — for THIS test org only. Demo org is never touched. Also set the org's
+    // physical postal address so the L1 compliance gate is satisfied for the happy-path send.
     await admin
       .from('organizations')
-      .update({ sending_enabled: true, sending_dry_run: false })
+      .update({ sending_enabled: true, sending_dry_run: false, postal_address: ADDRESS })
       .eq('id', a.orgId);
   }, 180_000);
 
@@ -205,11 +214,7 @@ describe.skipIf(!ready)('Slice 2.5 live — LIVE send via fake Smartlead (zero r
     const before = addLeadCalls.length;
     const res = await executeSend(userDb(a.token), enr as never, fake);
     expect(res.outcome).toBe('sender_unassigned');
-    const after = await admin
-      .from('enrollments')
-      .select('status')
-      .eq('id', enrNullSender)
-      .single();
+    const after = await admin.from('enrollments').select('status').eq('id', enrNullSender).single();
     expect(after.data?.status).toBe('awaiting_approval'); // deferred, not failed
     expect(addLeadCalls.length).toBe(before); // nothing pushed
   }, 60_000);
@@ -238,12 +243,12 @@ describe.skipIf(!ready)('Slice 2.5 live — LIVE send via fake Smartlead (zero r
       idempotency_key: `grant:${stamp}`,
     });
     const enr = (await admin.from('enrollments').select('*').eq('id', enrSuccess).single()).data;
-    const res = await executeSend(userDb(a.token), enr as never, fake);
+    const res = await executeSend(userDb(a.token), enr as never, fake, undefined, COMPLIANCE);
     expect(res.outcome).toBe('queued');
 
     const msg = await admin
       .from('messages')
-      .select('status, smartlead_message_id, gates')
+      .select('status, smartlead_message_id, gates, body')
       .eq('id', res.messageId)
       .single();
     expect(msg.data?.status).toBe('queued');
@@ -257,7 +262,13 @@ describe.skipIf(!ready)('Slice 2.5 live — LIVE send via fake Smartlead (zero r
       .single();
     expect(camp.data?.smartlead_campaign_id).toBe(`sl-camp-${stamp}`);
     expect(addLeadCalls.at(-1)?.email).toBe(leadBEmail);
-    expect(addLeadCalls.at(-1)?.custom_fields.velora_body?.length).toBeGreaterThan(0);
+    // L1 — the delivered body (velora_body) AND the stored message body carry the compliance footer:
+    // the physical postal address (CAN-SPAM) and a working, verifiable Velora-hosted unsubscribe link.
+    const deliveredBody = addLeadCalls.at(-1)?.custom_fields.velora_body ?? '';
+    expect(deliveredBody).toContain(ADDRESS);
+    expect(deliveredBody).toContain('/u/');
+    expect(msg.data?.body).toContain(ADDRESS);
+    expect(msg.data?.body).toContain('/u/');
 
     const debits = await admin
       .from('credit_ledger')
@@ -271,7 +282,7 @@ describe.skipIf(!ready)('Slice 2.5 live — LIVE send via fake Smartlead (zero r
     // (C1: the claim-before-push gate). A retry must NEVER re-send a real email.
     const pushesBefore = addLeadCalls.length;
     const enr2 = (await admin.from('enrollments').select('*').eq('id', enrSuccess).single()).data;
-    const res2 = await executeSend(userDb(a.token), enr2 as never, fake);
+    const res2 = await executeSend(userDb(a.token), enr2 as never, fake, undefined, COMPLIANCE);
     expect(res2.outcome).toBe('duplicate');
     expect(addLeadCalls.length).toBe(pushesBefore); // NO second push
     const debits2 = await admin
@@ -282,6 +293,80 @@ describe.skipIf(!ready)('Slice 2.5 live — LIVE send via fake Smartlead (zero r
     expect((debits2.data ?? []).length).toBe(1);
     const msgs = await admin.from('messages').select('id').eq('enrollment_id', enrSuccess);
     expect((msgs.data ?? []).length).toBe(1);
+  }, 90_000);
+
+  it('L1 FAIL-CLOSED GUARD — live send BLOCKED without postal address / unsub config, ALLOWED once set', async () => {
+    // Fresh credits so the compliance gate (which runs AFTER the credit check) is actually reached.
+    await admin.from('credit_ledger').insert({
+      organization_id: a.orgId,
+      delta: 100,
+      reason: 'signup_grant',
+      idempotency_key: `grant-compliance:${stamp}`,
+    });
+    const load = async () =>
+      (await admin.from('enrollments').select('*').eq('id', enrCompliance).single()).data;
+
+    // (a) postal_address UNSET → BLOCKED, no push, no message row, enrollment stays awaiting_approval.
+    await admin.from('organizations').update({ postal_address: null }).eq('id', a.orgId);
+    const pushesBefore = addLeadCalls.length;
+    const blocked = await executeSend(
+      userDb(a.token),
+      (await load()) as never,
+      fake,
+      undefined,
+      COMPLIANCE,
+    );
+    expect(blocked.outcome).toBe('compliance_blocked');
+    expect(addLeadCalls.length).toBe(pushesBefore); // NO push
+    expect((await load())?.status).toBe('awaiting_approval'); // deferred, not failed → recoverable
+    const noMsg = await admin.from('messages').select('id').eq('enrollment_id', enrCompliance);
+    expect((noMsg.data ?? []).length).toBe(0); // nothing recorded
+
+    // (b) address SET but unsub link unmintable (baseUrl/secret unset) → still BLOCKED, still no push.
+    await admin.from('organizations').update({ postal_address: ADDRESS }).eq('id', a.orgId);
+    const blocked2 = await executeSend(userDb(a.token), (await load()) as never, fake, undefined, {
+      baseUrl: undefined,
+      secret: undefined,
+    });
+    expect(blocked2.outcome).toBe('compliance_blocked');
+    expect(addLeadCalls.length).toBe(pushesBefore); // still NO push
+
+    // (c) address SET + unsub config present → ALLOWED (queued) with the footer, still respecting the
+    // two-flag gate (this org is flipped live for the test only). The guard is an ADDITIONAL gate, not
+    // a loosening: it can only ever BLOCK a would-be send, never enable one that the two-flag gate denies.
+    const allowed = await executeSend(
+      userDb(a.token),
+      (await load()) as never,
+      fake,
+      undefined,
+      COMPLIANCE,
+    );
+    expect(allowed.outcome).toBe('queued');
+    expect(addLeadCalls.length).toBe(pushesBefore + 1); // exactly one push now
+    const delivered = addLeadCalls.at(-1)?.custom_fields.velora_body ?? '';
+    expect(delivered).toContain(ADDRESS);
+    expect(delivered).toContain('/u/');
+  }, 90_000);
+
+  it('L1 — a DRY-RUN org with NO postal address is NEVER blocked (guard is live-branch only)', async () => {
+    // Prove the guard never touches the dry-run/demo path: flip this test org back to dry-run, clear
+    // the address, and confirm a send returns dry_run (not compliance_blocked) with no provider push.
+    await admin
+      .from('organizations')
+      .update({ sending_dry_run: true, postal_address: null })
+      .eq('id', a.orgId);
+    const dryEnr = await enroll(await person(`s25dry:${stamp}`, `dry+${stamp}@x.com`));
+    await prepareAndApprove(dryEnr);
+    const pushesBefore = addLeadCalls.length;
+    const enr = (await admin.from('enrollments').select('*').eq('id', dryEnr).single()).data;
+    const res = await executeSend(userDb(a.token), enr as never, fake, undefined, COMPLIANCE);
+    expect(res.outcome).toBe('dry_run'); // NOT compliance_blocked — dry-run never hits the gate
+    expect(addLeadCalls.length).toBe(pushesBefore); // no provider push in dry-run
+    // Restore live + address for any later assertions.
+    await admin
+      .from('organizations')
+      .update({ sending_dry_run: false, postal_address: ADDRESS })
+      .eq('id', a.orgId);
   }, 90_000);
 
   it.skipIf(!env.SMARTLEAD_WEBHOOK_SECRET)(

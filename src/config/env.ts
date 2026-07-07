@@ -67,6 +67,17 @@ export const EnvSchema = z
     // Email verification (MillionVerifier) — Phase 2 Slice 2.4. Absent → verification skipped.
     MILLIONVERIFIER_API_KEY: z.string().optional(),
 
+    // Compliance footer (L1) — every LIVE send carries a physical postal address (CAN-SPAM) + a
+    // WORKING opt-out. The opt-out is a Velora-HOSTED signed link (primary mechanism, provable and
+    // self-contained) served at PUBLIC_BASE_URL/u/:token and signed with UNSUBSCRIBE_SECRET. Both are
+    // optional at BOOT (the server must stay up), but a LIVE send is BLOCKED (fail-closed) when either
+    // is unset — an unset value means we cannot mint a working unsubscribe link, which would be a
+    // CAN-SPAM/GDPR violation. Dry-run / demo are never affected (the guard is live-branch only).
+    // PUBLIC_BASE_URL = this backend's public origin (e.g. https://artisan-backend-...up.railway.app),
+    // where the /u unsubscribe route is served. MUST be set on Railway before flipping an org to live.
+    PUBLIC_BASE_URL: z.string().optional(),
+    UNSUBSCRIBE_SECRET: z.string().optional(),
+
     // DKIM selector (Slice 4.12) — DKIM verification needs a selector we don't generically know. Absent
     // → DKIM stays honestly 'unknown' (never a fabricated 'pass'); SPF + DMARC verify regardless.
     DKIM_SELECTOR: z.string().optional(),
