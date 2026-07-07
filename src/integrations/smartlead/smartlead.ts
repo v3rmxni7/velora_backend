@@ -2,9 +2,9 @@ import { env } from '../../config/env.js';
 import { AppError } from '../../lib/errors.js';
 import { createSandboxSmartleadClient } from './sandbox.js';
 import type {
-  SmartleadClient,
   SmartleadEmailAccount,
   SmartleadLead,
+  SmartleadProvisioningClient,
   SmartleadReply,
   SmartleadWarmupStats,
 } from './types.js';
@@ -24,7 +24,7 @@ const SMARTLEAD_TIMEOUT_MS = 20_000;
 // Smartlead client (mirrors the scraper/embeddings adapter pattern): factory that validates the
 // key, uses global fetch, passes ?api_key=, and throws AppError on misconfig/HTTP. Read methods
 // (2.1) + write methods (2.5). Injectable — tests pass a fake.
-export function createSmartleadClient(): SmartleadClient {
+export function createSmartleadClient(): SmartleadProvisioningClient {
   if (!env.SMARTLEAD_API_KEY) {
     // Dev/demo with no key: a clearly-labeled sandbox client that simulates the READ surfaces
     // (mailbox sync + warmth) and refuses every real send/provision. A real key falls through to
@@ -97,6 +97,35 @@ export function createSmartleadClient(): SmartleadClient {
     return res.json().catch(() => ({}));
   }
 
+  // Credential-bearing calls (mailbox connect + warmup) must NEVER surface Smartlead's raw response
+  // body in an error: if Smartlead ever echoed the submitted password/username back in a validation
+  // error, the generic send() path (which truncates the body into the AppError message) would leak
+  // it. sendNoEcho reads NO response body on failure — a status-only, generic error — and the request
+  // body (which holds the password) is never logged. Used only by createEmailAccount / enableWarmup.
+  async function sendNoEcho(path: string, body: unknown, action: string): Promise<unknown> {
+    let res: Response;
+    try {
+      res = await fetch(url(path), {
+        method: 'POST',
+        headers: { accept: 'application/json', 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(SMARTLEAD_TIMEOUT_MS),
+      });
+    } catch {
+      throw new AppError(`Smartlead is unreachable while trying to ${action}`, {
+        code: 'smartlead_error',
+        statusCode: 502,
+      });
+    }
+    if (!res.ok) {
+      throw new AppError(`Smartlead could not ${action} (${res.status})`, {
+        code: 'smartlead_error',
+        statusCode: res.status === 429 ? 429 : 502,
+      });
+    }
+    return res.json().catch(() => ({}));
+  }
+
   return {
     // ---- read (2.1) ----
     async listEmailAccounts(): Promise<SmartleadEmailAccount[]> {
@@ -106,6 +135,63 @@ export function createSmartleadClient(): SmartleadClient {
     },
     async getWarmupStats(emailAccountId): Promise<SmartleadWarmupStats> {
       return (await get(`/email-accounts/${emailAccountId}/warmup-stats`)) as SmartleadWarmupStats;
+    },
+
+    // ---- mailbox connect (S3) ----
+    // POST /email-accounts/save (upsert; omit `id` → create). The password is pass-through: mapped to
+    // Smartlead's `password` and sent ONCE — never returned to the caller, never logged. We read only
+    // data.id + the connection-validation flags from the response. Uses sendNoEcho so a Smartlead
+    // error can't echo the credential. (Bare path — url() adds /api/v1 base + ?api_key=.)
+    async createEmailAccount(input) {
+      const res = (await sendNoEcho(
+        '/email-accounts/save',
+        {
+          from_name: input.fromName,
+          from_email: input.fromEmail,
+          user_name: input.userName, // NOTE: `user_name` with underscore (Smartlead gotcha)
+          password: input.password, // pass-through — the only place the secret is used
+          smtp_host: input.smtpHost,
+          smtp_port: input.smtpPort,
+          imap_host: input.imapHost,
+          imap_port: input.imapPort,
+          warmup_enabled: true,
+          type: 'SMTP',
+          ...(input.maxEmailPerDay ? { max_email_per_day: input.maxEmailPerDay } : {}),
+        },
+        'connect the mailbox',
+      )) as {
+        id?: number | string;
+        is_smtp_success?: boolean;
+        is_imap_success?: boolean;
+        data?: { id?: number | string; is_smtp_success?: boolean; is_imap_success?: boolean };
+      };
+      // Defensive: the reference example wraps in `data`, but tolerate a top-level id too.
+      const id = res.data?.id ?? res.id;
+      if (id == null) {
+        throw new AppError('Smartlead did not return an email-account id', {
+          code: 'smartlead_error',
+          statusCode: 502,
+        });
+      }
+      // Absent flag → treat as ok (older API); only an explicit false is a validation failure.
+      return {
+        id: String(id),
+        smtpOk: (res.data?.is_smtp_success ?? res.is_smtp_success) !== false,
+        imapOk: (res.data?.is_imap_success ?? res.is_imap_success) !== false,
+      };
+    },
+    async enableWarmup(emailAccountId): Promise<void> {
+      // Dedicated warmup endpoint (the authoritative path); safe recommended defaults.
+      await sendNoEcho(
+        `/email-accounts/${emailAccountId}/warmup`,
+        {
+          warmup_enabled: true,
+          total_warmup_per_day: 20,
+          daily_rampup: 2,
+          reply_rate_percentage: 30,
+        },
+        'enable warmup',
+      );
     },
 
     // ---- write (2.5) ----

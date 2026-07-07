@@ -1,5 +1,9 @@
 import { AppError } from '../../lib/errors.js';
-import type { SmartleadClient, SmartleadEmailAccount, SmartleadWarmupStats } from './types.js';
+import type {
+  SmartleadEmailAccount,
+  SmartleadProvisioningClient,
+  SmartleadWarmupStats,
+} from './types.js';
 
 // A clearly-labeled, NON-functional Smartlead client, used ONLY when no SMARTLEAD_API_KEY is set
 // (dev/demo). It simulates the READ surfaces so mailbox sync + warmth populate through the REAL
@@ -23,7 +27,7 @@ function refuse(action: string): never {
   );
 }
 
-export function createSandboxSmartleadClient(): SmartleadClient {
+export function createSandboxSmartleadClient(): SmartleadProvisioningClient {
   return {
     // ---- read: simulate one unmistakably-demo, warm-able account ----
     async listEmailAccounts(): Promise<SmartleadEmailAccount[]> {
@@ -42,6 +46,14 @@ export function createSandboxSmartleadClient(): SmartleadClient {
       // Clears the real classifyWarmth thresholds (sent >= 100, spamRate <= 0.05) → the demo mailbox
       // is promoted to 'warm' THROUGH the real warmth logic, not hard-set.
       return { sent_count: 120, inbox_count: 118, spam_count: 0 };
+    },
+
+    // ---- mailbox connect (S3): refuse (never provision a real account / warmup without a key) ----
+    async createEmailAccount() {
+      return refuse('create an email account');
+    },
+    async enableWarmup() {
+      return refuse('enable warmup');
     },
 
     // ---- write / send: refuse (never fake a real send or provision) ----

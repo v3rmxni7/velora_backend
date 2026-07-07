@@ -45,6 +45,28 @@ export interface SmartleadReply {
   inReplyToMessageId: string | null;
 }
 
+// Mailbox-connect input (S3). The `password` is a PASS-THROUGH to Smartlead's /email-accounts/save —
+// it lives only in transit through this object; Velora NEVER persists, logs, or echoes it.
+export interface SmartleadEmailAccountInput {
+  fromName: string;
+  fromEmail: string;
+  userName: string; // SMTP/IMAP login (usually = fromEmail); Smartlead's `user_name` (with underscore)
+  password: string; // SMTP/app password — pass-through only
+  smtpHost: string;
+  smtpPort: number;
+  imapHost: string; // IMAP is REQUIRED by Smartlead (reply detection + warmup), not just SMTP
+  imapPort: number;
+  maxEmailPerDay?: number;
+}
+
+// Result of a create/upsert. smtpOk/imapOk come from is_smtp_success/is_imap_success — a connect can
+// return HTTP 200 with these false (bad creds), so the caller must check them, not just the 200.
+export interface SmartleadCreatedAccount {
+  id: string;
+  smtpOk: boolean;
+  imapOk: boolean;
+}
+
 export interface SmartleadClient {
   // --- read (2.1) ---
   listEmailAccounts(): Promise<SmartleadEmailAccount[]>;
@@ -58,4 +80,12 @@ export interface SmartleadClient {
   addLead(campaignId: string, lead: SmartleadLead): Promise<void>;
   // --- reply (3.4) — an in-thread response, NOT a new cold lead ---
   sendReply(campaignId: string, reply: SmartleadReply): Promise<void>;
+}
+
+// The provisioning surface (S3 mailbox connect) — only the real + sandbox factory clients implement
+// it; base SmartleadClient (used by the send/read paths + test fakes) is unchanged. createEmailAccount
+// takes the password PASS-THROUGH and returns only ids/flags (never the credential).
+export interface SmartleadProvisioningClient extends SmartleadClient {
+  createEmailAccount(input: SmartleadEmailAccountInput): Promise<SmartleadCreatedAccount>;
+  enableWarmup(emailAccountId: string | number): Promise<void>;
 }

@@ -14,6 +14,7 @@ export type AuditKind =
   | 'sending_go_live'
   | 'sending_paused'
   | 'mailbox_warmup_override_set'
+  | 'mailbox_connected'
   | 'retention_reported'
   | 'retention_purged';
 

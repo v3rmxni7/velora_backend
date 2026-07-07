@@ -3,9 +3,16 @@ import { z } from 'zod';
 import { syncMailboxes } from '../../agents/sending/mailbox-sync.js';
 import { getSupabaseAdmin } from '../../db/client.js';
 import { createSmartleadClient } from '../../integrations/smartlead/smartlead.js';
+import type { SmartleadProvisioningClient } from '../../integrations/smartlead/types.js';
 import { recordAuditSafe } from '../../lib/audit.js';
 import { events, inngest } from '../../workers/inngest/client.js';
 import { authenticate, requireAuth, requireRole } from '../middleware/auth.js';
+
+// `makeSmartleadClient` is injectable ONLY so tests exercise the connect lane with a fake provisioning
+// client (no real Smartlead call); in production it is undefined and the real factory is used.
+interface SendersRouteOptions {
+  makeSmartleadClient?: () => SmartleadProvisioningClient;
+}
 
 const CreateSender = z.object({ displayName: z.string().min(1).max(200) });
 const CreateDomain = z.object({ domain: z.string().min(3).max(253) });
@@ -19,10 +26,22 @@ const PatchSender = z.object({
 const PrimaryMailbox = z.object({ mailboxId: z.uuid().nullable() });
 const PatchMailbox = z.object({ senderId: z.uuid().nullable() });
 const WarmupOverride = z.object({ override: z.boolean() });
+// Mailbox connect (S3). SMTP + IMAP. `password` is validated only for shape (never logged/echoed —
+// Zod issues carry no field values) and passed through to Smartlead, never persisted.
+const ConnectMailbox = z.object({
+  fromName: z.string().min(1).max(200),
+  fromEmail: z.email(),
+  userName: z.string().min(1).max(320),
+  password: z.string().min(1).max(1024),
+  smtpHost: z.string().min(1).max(255),
+  smtpPort: z.coerce.number().int().min(1).max(65535),
+  imapHost: z.string().min(1).max(255),
+  imapPort: z.coerce.number().int().min(1).max(65535),
+});
 
 // Team surface (Phase 2 Slice 2.1): senders, their mailboxes, sending domains. All user-scoped
 // (RLS). Read-only against Smartlead — nothing here can send.
-export const sendersRoute: FastifyPluginAsync = async (app) => {
+export const sendersRoute: FastifyPluginAsync<SendersRouteOptions> = async (app, opts) => {
   app.addHook('preHandler', authenticate);
 
   app.get('/senders', async (request) => {
@@ -179,6 +198,50 @@ export const sendersRoute: FastifyPluginAsync = async (app) => {
       .order('created_at', { ascending: false });
     if (error) throw error;
     return { data };
+  });
+
+  // Connect a mailbox via SMTP/IMAP (S3). OWNER/ADMIN. The credentials are a PASS-THROUGH to Smartlead
+  // — Velora NEVER persists, logs, or echoes the password (it lives only in transit through this
+  // handler → the adapter → Smartlead). Creates the account in Smartlead (503 in the no-key sandbox),
+  // enables warmup, then syncs it into mailboxes as 'warming' — which grants NO send capability: the
+  // warm-up physics + the S2 override owner-gate + the two-flag invariant + the L1 compliance guard all
+  // still stand between a connected mailbox and a live send. Bad creds can return 200 with
+  // is_smtp_success/is_imap_success false → surfaced as 422 (never a silent fake success).
+  app.post('/mailboxes/connect', async (request, reply) => {
+    const { db, organizationId, userId } = requireAuth(request);
+    requireRole(request, ['owner', 'admin']);
+    const input = ConnectMailbox.parse(request.body);
+
+    const sl = (opts.makeSmartleadClient ?? createSmartleadClient)();
+    const created = await sl.createEmailAccount(input);
+    if (!created.smtpOk || !created.imapOk) {
+      return reply.code(422).send({
+        error: 'mailbox_connect_failed',
+        detail: { smtp: created.smtpOk, imap: created.imapOk },
+      });
+    }
+    await sl.enableWarmup(created.id);
+    // Idempotent upsert of the new account into mailboxes (+ enqueues the warmup refresh). It lands
+    // 'warming'/'connected', never 'warm'.
+    await syncMailboxes(db, organizationId, sl);
+
+    // Audit the connect WITHOUT any credential — only the non-secret identity + the Smartlead id.
+    await recordAuditSafe(getSupabaseAdmin(), {
+      organizationId,
+      kind: 'mailbox_connected',
+      userId,
+      args: { fromEmail: input.fromEmail, smartleadEmailAccountId: created.id },
+      source: 'user',
+    });
+
+    const mb = await db
+      .from('mailboxes')
+      .select('*')
+      .eq('organization_id', organizationId)
+      .eq('email', input.fromEmail)
+      .maybeSingle();
+    if (mb.error) throw mb.error;
+    return { data: mb.data };
   });
 
   // Pull the org's Smartlead email accounts into mailboxes, then best-effort enqueue a per-mailbox
