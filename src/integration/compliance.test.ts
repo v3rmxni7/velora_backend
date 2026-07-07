@@ -38,6 +38,8 @@ describe.skipIf(!ready)('4.12 — compliance: audit log, DNS verify, dry-run ret
   const stamp = Date.now();
   const a: Acct = { orgId: '', userId: '', email: `comp-a+${stamp}@example.com`, token: '' };
   const b: Acct = { orgId: '', userId: '', email: `comp-b+${stamp}@example.com`, token: '' };
+  // A non-owner MEMBER of org A — proves the postal-address setter is owner/admin-gated.
+  const m: Acct = { orgId: '', userId: '', email: `comp-m+${stamp}@example.com`, token: '' };
 
   async function mkOrgUser(acct: Acct, name: string) {
     const org = await admin.from('organizations').insert({ name }).select('id').single();
@@ -59,6 +61,25 @@ describe.skipIf(!ready)('4.12 — compliance: audit log, DNS verify, dry-run ret
     acct.token = signin.data.session.access_token;
   }
 
+  // Add a member to an EXISTING org (role gate test).
+  async function mkMember(acct: Acct, orgId: string) {
+    acct.orgId = orgId;
+    const pwd = `Test-${stamp}-pw!`;
+    const created = await admin.auth.admin.createUser({
+      email: acct.email,
+      password: pwd,
+      email_confirm: true,
+    });
+    if (created.error || !created.data.user) throw created.error ?? new Error('createUser');
+    acct.userId = created.data.user.id;
+    await admin
+      .from('users')
+      .insert({ id: acct.userId, organization_id: orgId, email: acct.email, role: 'member' });
+    const signin = await anon.auth.signInWithPassword({ email: acct.email, password: pwd });
+    if (signin.error || !signin.data.session) throw signin.error ?? new Error('signin');
+    acct.token = signin.data.session.access_token;
+  }
+
   function app() {
     const f = Fastify();
     return f.register(complianceRoute).then(() => f);
@@ -67,12 +88,13 @@ describe.skipIf(!ready)('4.12 — compliance: audit log, DNS verify, dry-run ret
   beforeAll(async () => {
     await mkOrgUser(a, `comp-A-${stamp}`);
     await mkOrgUser(b, `comp-B-${stamp}`);
+    await mkMember(m, a.orgId);
   }, 180_000);
 
   afterAll(async () => {
     if (a.orgId) await admin.from('organizations').delete().eq('id', a.orgId);
     if (b.orgId) await admin.from('organizations').delete().eq('id', b.orgId);
-    for (const u of [a, b]) if (u.userId) await admin.auth.admin.deleteUser(u.userId);
+    for (const u of [a, b, m]) if (u.userId) await admin.auth.admin.deleteUser(u.userId);
   });
 
   it('audit_logs is immutable (no client insert) + org-scoped read', async () => {
@@ -247,5 +269,43 @@ describe.skipIf(!ready)('4.12 — compliance: audit log, DNS verify, dry-run ret
     expect(data.retention.dryRun).toBe(false);
     expect(typeof data.retention.websiteVisitsDays).toBe('number');
     expect(typeof data.suppression.total).toBe('number');
+  }, 60_000);
+
+  it('postal address: OWNER sets/clears via the service-role route; a MEMBER is 403; GET reflects it', async () => {
+    const f = await app();
+    const patch = (token: string, postalAddress: string) =>
+      f.inject({
+        method: 'PATCH',
+        url: '/compliance/postal-address',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        payload: JSON.stringify({ postalAddress }),
+      });
+    const readAddress = async (token: string) => {
+      const r = await f.inject({
+        method: 'GET',
+        url: '/compliance',
+        headers: { authorization: `Bearer ${token}` },
+      });
+      return (r.json() as { data: { postalAddress: string | null } }).data.postalAddress;
+    };
+
+    // A MEMBER cannot set it (owner/admin gate) — 403, nothing written.
+    const memberRes = await patch(m.token, 'Member St 1');
+    expect(memberRes.statusCode).toBe(403);
+    expect(await readAddress(a.token)).toBeNull();
+
+    // OWNER sets it → 200 + echoed; GET reflects it.
+    const addr = 'HelloAgentic, 123 Example St, Bengaluru 560001, India';
+    const setRes = await patch(a.token, addr);
+    expect(setRes.statusCode).toBe(200);
+    expect((setRes.json() as { data: { postalAddress: string } }).data.postalAddress).toBe(addr);
+    expect(await readAddress(a.token)).toBe(addr);
+
+    // A blank value CLEARS it (→ live sends fail closed again).
+    const clearRes = await patch(a.token, '   ');
+    expect(clearRes.statusCode).toBe(200);
+    expect(await readAddress(a.token)).toBeNull();
+
+    await f.close();
   }, 60_000);
 });

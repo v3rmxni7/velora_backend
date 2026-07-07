@@ -10,6 +10,7 @@ export type AuditKind =
   | 'suppression_added'
   | 'copilot_action_confirmed'
   | 'domain_verified'
+  | 'postal_address_updated'
   | 'retention_reported'
   | 'retention_purged';
 
