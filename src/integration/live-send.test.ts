@@ -266,9 +266,9 @@ describe.skipIf(!ready)('Slice 2.5 live — LIVE send via fake Smartlead (zero r
     // the physical postal address (CAN-SPAM) and a working, verifiable Velora-hosted unsubscribe link.
     const deliveredBody = addLeadCalls.at(-1)?.custom_fields.velora_body ?? '';
     expect(deliveredBody).toContain(ADDRESS);
-    expect(deliveredBody).toContain('/u/');
+    expect(deliveredBody).toContain('/u?t=');
     expect(msg.data?.body).toContain(ADDRESS);
-    expect(msg.data?.body).toContain('/u/');
+    expect(msg.data?.body).toContain('/u?t=');
 
     const debits = await admin
       .from('credit_ledger')
@@ -345,7 +345,7 @@ describe.skipIf(!ready)('Slice 2.5 live — LIVE send via fake Smartlead (zero r
     expect(addLeadCalls.length).toBe(pushesBefore + 1); // exactly one push now
     const delivered = addLeadCalls.at(-1)?.custom_fields.velora_body ?? '';
     expect(delivered).toContain(ADDRESS);
-    expect(delivered).toContain('/u/');
+    expect(delivered).toContain('/u?t=');
   }, 90_000);
 
   it('L1 — a DRY-RUN org with NO postal address is NEVER blocked (guard is live-branch only)', async () => {

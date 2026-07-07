@@ -41,8 +41,8 @@ describe('resolveCompliantBody — fail-closed compliance gate (pure)', () => {
     expect(r.body).toContain(OK.postalAddress);
     // A working, verifiable unsubscribe link (the primary opt-out) present.
     expect(r.body).toContain(r.unsubscribeUrl);
-    expect(r.unsubscribeUrl).toContain('/u/');
-    const token = r.unsubscribeUrl.split('/u/')[1] ?? '';
+    expect(r.unsubscribeUrl).toContain('/u?t=');
+    const token = new URL(r.unsubscribeUrl).searchParams.get('t') ?? '';
     expect(verifyUnsubscribe(token, OK.secret)).toEqual({
       organizationId: ORG,
       email: OK.email,

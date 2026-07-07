@@ -13,17 +13,17 @@ describe('unsubscribe token', () => {
 
   it('rejects a tampered body', () => {
     const token = signUnsubscribe(ORG, 'a@b.com', SECRET);
-    const [, sig] = token.split('.');
+    const [, sig] = token.split('~');
     const forgedBody = Buffer.from(
       JSON.stringify({ organizationId: ORG, email: 'attacker@evil.com' }),
     ).toString('base64url');
-    expect(verifyUnsubscribe(`${forgedBody}.${sig}`, SECRET)).toBeNull();
+    expect(verifyUnsubscribe(`${forgedBody}~${sig}`, SECRET)).toBeNull();
   });
 
   it('rejects a tampered signature', () => {
     const token = signUnsubscribe(ORG, 'a@b.com', SECRET);
-    const [body] = token.split('.');
-    expect(verifyUnsubscribe(`${body}.deadbeef`, SECRET)).toBeNull();
+    const [body] = token.split('~');
+    expect(verifyUnsubscribe(`${body}~deadbeef`, SECRET)).toBeNull();
   });
 
   it('rejects a token signed with a different secret', () => {
@@ -33,15 +33,16 @@ describe('unsubscribe token', () => {
 
   it('rejects malformed tokens', () => {
     expect(verifyUnsubscribe('', SECRET)).toBeNull();
-    expect(verifyUnsubscribe('nodot', SECRET)).toBeNull();
-    expect(verifyUnsubscribe('a.b.c', SECRET)).toBeNull();
-    expect(verifyUnsubscribe('.', SECRET)).toBeNull();
+    expect(verifyUnsubscribe('noseparator', SECRET)).toBeNull();
+    expect(verifyUnsubscribe('a~b~c', SECRET)).toBeNull();
+    expect(verifyUnsubscribe('~', SECRET)).toBeNull();
+    expect(verifyUnsubscribe('a.b', SECRET)).toBeNull(); // '.' is no longer the separator
   });
 
-  it('builds an absolute /u/<token> URL and strips a trailing slash from the base', () => {
+  it('builds an absolute /u?t=<token> URL and strips a trailing slash from the base', () => {
     const url = buildUnsubscribeUrl('https://api.example.com/', ORG, 'a@b.com', SECRET);
-    expect(url.startsWith('https://api.example.com/u/')).toBe(true);
-    const token = url.slice('https://api.example.com/u/'.length);
+    expect(url.startsWith('https://api.example.com/u?t=')).toBe(true);
+    const token = new URL(url).searchParams.get('t') ?? '';
     expect(verifyUnsubscribe(token, SECRET)).toEqual({ organizationId: ORG, email: 'a@b.com' });
   });
 });

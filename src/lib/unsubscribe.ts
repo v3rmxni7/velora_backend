@@ -17,17 +17,23 @@ export interface UnsubscribePayload {
   email: string;
 }
 
+// body~sig. The separator is '~' (an RFC-3986 UNRESERVED char, safe unencoded in a path segment) and
+// NOT '.': the token rides in the URL PATH (/u/:token), and Fastify's find-my-way treats a '.' in a
+// parametric segment as an extension delimiter, so a dotted token would 404 the route. '~' is also
+// absent from the base64url alphabet (A–Z a–z 0–9 - _), so it unambiguously splits body from sig.
+const SEP = '~';
+
 /** Sign an opaque unsubscribe token binding org + email. */
 export function signUnsubscribe(organizationId: string, email: string, secret: string): string {
   const payload: UnsubscribePayload = { organizationId, email: email.toLowerCase() };
   const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
   const sig = createHmac('sha256', secret).update(body).digest('base64url');
-  return `${body}.${sig}`;
+  return `${body}${SEP}${sig}`;
 }
 
 /** Verify signature + shape. Returns the payload or null (tampered / malformed / wrong secret). */
 export function verifyUnsubscribe(token: string, secret: string): UnsubscribePayload | null {
-  const parts = token.split('.');
+  const parts = token.split(SEP);
   if (parts.length !== 2) return null;
   const [body, sig] = parts;
   if (!body || !sig) return null;
@@ -53,7 +59,8 @@ export function verifyUnsubscribe(token: string, secret: string): UnsubscribePay
   return payload;
 }
 
-/** Build the absolute unsubscribe URL embedded in the compliance footer. */
+/** Build the absolute unsubscribe URL embedded in the compliance footer. The token rides in the query
+ *  string (?t=…), not a path segment — an opaque token in a path param trips the router's matcher. */
 export function buildUnsubscribeUrl(
   baseUrl: string,
   organizationId: string,
@@ -61,5 +68,5 @@ export function buildUnsubscribeUrl(
   secret: string,
 ): string {
   const token = signUnsubscribe(organizationId, email, secret);
-  return `${baseUrl.replace(/\/+$/, '')}/u/${token}`;
+  return `${baseUrl.replace(/\/+$/, '')}/u?t=${encodeURIComponent(token)}`;
 }

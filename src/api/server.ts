@@ -33,6 +33,7 @@ import { sendingRoute } from './routes/sending.js';
 import { signalsRoute } from './routes/signals.js';
 import { tasksRoute } from './routes/tasks.js';
 import { teamRoute } from './routes/team.js';
+import { unsubscribeRoute } from './routes/unsubscribe.js';
 import { webhooksRoute } from './routes/webhooks.js';
 import { websiteVisitorsRoute } from './routes/website-visitors.js';
 
@@ -108,6 +109,10 @@ async function start(): Promise<void> {
   // webhook; it resolves the org from the site_key (never the request) and only ever writes an
   // anonymous visit. A GET image beacon sidesteps CORS entirely.
   await app.register(pixelRoute);
+  // PUBLIC unsubscribe (no JWT) — the L1 opt-out embedded in every live send. GET renders a confirm
+  // page (never mutates — scanner-safe); POST verifies the signed token and writes suppression_list.
+  // Org+email come from OUR signature, never the request; secret defaults to env.UNSUBSCRIBE_SECRET.
+  await app.register(unsubscribeRoute);
   // PUBLIC OAuth callback (no JWT) — its own plugin so it never inherits the authed integrations
   // route's `authenticate` hook. Resolves the org from a signed, single-use state, never the query.
   await app.register(integrationsOAuthRoute);
