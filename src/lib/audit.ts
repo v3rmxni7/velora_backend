@@ -11,6 +11,8 @@ export type AuditKind =
   | 'copilot_action_confirmed'
   | 'domain_verified'
   | 'postal_address_updated'
+  | 'sending_go_live'
+  | 'sending_paused'
   | 'retention_reported'
   | 'retention_purged';
 
