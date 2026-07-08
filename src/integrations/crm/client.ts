@@ -93,6 +93,10 @@ export function buildAuthorizeUrl(
 const HUBSPOT_TOKEN_URL = 'https://api.hubapi.com/oauth/v1/token';
 const HUBSPOT_CONTACTS_URL = 'https://api.hubapi.com/crm/v3/objects/contacts';
 const HUBSPOT_CONTACT_PROPS = ['email', 'firstname', 'lastname', 'jobtitle', 'company'] as const;
+// Client-side timeout so a hung HubSpot socket can't stall runCrmSync (undici has no default total
+// timeout; the sweep iterates tenants sequentially). Matches the Apollo/Smartlead/MillionVerifier
+// adapters. AbortError is caught by the existing .catch(()=>null) → CrmAuthError/null (fail-safe).
+const HUBSPOT_TIMEOUT_MS = 20_000;
 
 type FetchLike = typeof fetch;
 
@@ -178,6 +182,7 @@ export class HubspotCrmClient implements CrmClient {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: body.toString(),
+      signal: AbortSignal.timeout(HUBSPOT_TIMEOUT_MS),
     }).catch(() => null);
     if (!res) throw new CrmAuthError('refresh_network_error');
     if (!res.ok) {
@@ -212,6 +217,7 @@ export class HubspotCrmClient implements CrmClient {
     if (cursor) q.set('after', cursor);
     const res = await this.doFetch(`${HUBSPOT_CONTACTS_URL}?${q.toString()}`, {
       headers: { authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(HUBSPOT_TIMEOUT_MS),
     }).catch(() => null);
     if (!res) throw new CrmAuthError('contacts_network_error');
     if (!res.ok) throw new CrmAuthError(`contacts_http_${res.status}`);
@@ -240,6 +246,7 @@ export async function exchangeHubspotCode(
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body: body.toString(),
+    signal: AbortSignal.timeout(HUBSPOT_TIMEOUT_MS),
   }).catch(() => null);
   if (!res || !res.ok) return null; // never read/echo the error body
   const json = (await res.json()) as HubspotTokenResponse;
