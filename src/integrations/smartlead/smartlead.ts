@@ -120,7 +120,10 @@ export function createSmartleadClient(): SmartleadProvisioningClient {
     if (!res.ok) {
       throw new AppError(`Smartlead could not ${action} (${res.status})`, {
         code: 'smartlead_error',
-        statusCode: res.status === 429 ? 429 : 502,
+        // Preserve 406 (Smartlead's ACCOUNT_VERIFICATION_FAILED = bad SMTP/IMAP creds, verified live) +
+        // 429 so callers can tell "the customer's creds are wrong" from "the provider is down". The
+        // response body is NEVER read (it may echo the password) — only the status code.
+        statusCode: res.status === 429 ? 429 : res.status === 406 ? 406 : 502,
       });
     }
     return res.json().catch(() => ({}));
@@ -143,28 +146,41 @@ export function createSmartleadClient(): SmartleadProvisioningClient {
     // data.id + the connection-validation flags from the response. Uses sendNoEcho so a Smartlead
     // error can't echo the credential. (Bare path — url() adds /api/v1 base + ?api_key=.)
     async createEmailAccount(input) {
-      const res = (await sendNoEcho(
-        '/email-accounts/save',
-        {
-          from_name: input.fromName,
-          from_email: input.fromEmail,
-          user_name: input.userName, // NOTE: `user_name` with underscore (Smartlead gotcha)
-          password: input.password, // pass-through — the only place the secret is used
-          smtp_host: input.smtpHost,
-          smtp_port: input.smtpPort,
-          imap_host: input.imapHost,
-          imap_port: input.imapPort,
-          warmup_enabled: true,
-          type: 'SMTP',
-          ...(input.maxEmailPerDay ? { max_email_per_day: input.maxEmailPerDay } : {}),
-        },
-        'connect the mailbox',
-      )) as {
+      type SaveRes = {
         id?: number | string;
         is_smtp_success?: boolean;
         is_imap_success?: boolean;
         data?: { id?: number | string; is_smtp_success?: boolean; is_imap_success?: boolean };
       };
+      let res: SaveRes;
+      try {
+        res = (await sendNoEcho(
+          '/email-accounts/save',
+          {
+            from_name: input.fromName,
+            from_email: input.fromEmail,
+            user_name: input.userName, // NOTE: `user_name` with underscore (Smartlead gotcha)
+            password: input.password, // pass-through — the only place the secret is used
+            smtp_host: input.smtpHost,
+            smtp_port: input.smtpPort,
+            imap_host: input.imapHost,
+            imap_port: input.imapPort,
+            warmup_enabled: true,
+            type: 'SMTP',
+            ...(input.maxEmailPerDay ? { max_email_per_day: input.maxEmailPerDay } : {}),
+          },
+          'connect the mailbox',
+        )) as SaveRes;
+      } catch (e) {
+        // Bad SMTP/IMAP creds → Smartlead returns HTTP 406 (ACCOUNT_VERIFICATION_FAILED) — verified
+        // live, NOT the assumed 200+is_smtp_success:false. Surface it as a clean bad-creds result so the
+        // route returns 422 ("check host/port + app password"), never a 502 provider-outage error. The
+        // response body is never read (it may echo the password) — the 406 status alone drives this.
+        if (e instanceof AppError && e.statusCode === 406) {
+          return { id: '', smtpOk: false, imapOk: false };
+        }
+        throw e;
+      }
       // Defensive: the reference example wraps in `data`, but tolerate a top-level id too.
       const id = res.data?.id ?? res.id;
       if (id == null) {
